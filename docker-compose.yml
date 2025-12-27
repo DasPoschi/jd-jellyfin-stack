@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  jdownloader:
+    image: jlesage/jdownloader-2:latest
+    container_name: jdownloader-2
+    restart: unless-stopped
+    ports:
+      - "5800:5800"
+    environment:
+      TZ: "Europe/Berlin"
+    volumes:
+      - ./data/jd-config:/config
+      - ./data/jd-output:/output
+
+  jd-webgui:
+    build: ./jd-webgui
+    container_name: jd-webgui
+    restart: unless-stopped
+    depends_on:
+      - jdownloader
+    ports:
+      - "8080:8080"
+    environment:
+      MYJD_EMAIL: "DEINE_EMAIL"
+      MYJD_PASSWORD: "DEIN_MYJD_PASSWORT"
+      MYJD_DEVICE: "DEIN_DEVICE_NAME"
+
+      JELLYFIN_HOST: "192.168.1.1"
+      JELLYFIN_PORT: "22"
+      JELLYFIN_USER: "jellyfinuser"
+      JELLYFIN_DEST_DIR: "/srv/media/movies/inbox"
+      JELLYFIN_SSH_KEY: "/ssh/id_ed25519"
+
+      POLL_SECONDS: "5"
+
+    volumes:
+      - ./data/jd-output:/output:ro
+      - ~/.ssh/id_ed25519:/ssh/id_ed25519:ro
