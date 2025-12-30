@@ -45,9 +45,26 @@ services:
       BASIC_AUTH_USER: "admin"
       BASIC_AUTH_PASS: "CHANGE_ME"
 
+        # Jellyfin API (für Rescan)
+      JELLYFIN_API_BASE: "http://192.168.1.1:8096"
+      JELLYFIN_API_KEY: "DEIN_JELLYFIN_API_KEY"
+      JELLYFIN_LIBRARY_REFRESH: "true"   # true/false
+
+      # TMDB (für Umbenennung)
+      TMDB_API_KEY: "DEIN_TMDB_API_KEY"
+      TMDB_LANGUAGE: "de-DE"             # optional, z.B. de-DE oder en-US
+
+      # Zielstruktur
+      CREATE_MOVIE_FOLDER: "true"        # pro Film Unterordner
+      CREATE_SERIES_FOLDERS: "true"      # /Serien/Show/Season xx/
+
+      # MD5 Sidecars nicht in /output schreiben
+      MD5_DIR: "/md5"
+
     volumes:
       # Muss identisch zum JD Mount sein, damit /output stimmt
       - ./data/jd-output:/output:ro
+      - ./data/md5:/md5:rw
 
       # SSH Key für Upload zur Jellyfin-VM
       - ~/.ssh/id_ed25519:/ssh/id_ed25519:ro
