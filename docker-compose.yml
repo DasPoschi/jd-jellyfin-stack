@@ -22,18 +22,32 @@ services:
     ports:
       - "8080:8080"
     environment:
+      # MyJDownloader
       MYJD_EMAIL: "DEINE_EMAIL"
       MYJD_PASSWORD: "DEIN_MYJD_PASSWORT"
       MYJD_DEVICE: "DEIN_DEVICE_NAME"
 
+      # Jellyfin VM SSH target
       JELLYFIN_HOST: "192.168.1.1"
       JELLYFIN_PORT: "22"
       JELLYFIN_USER: "jellyfinuser"
-      JELLYFIN_DEST_DIR: "/srv/media/movies/inbox"
       JELLYFIN_SSH_KEY: "/ssh/id_ed25519"
+
+      # Ziele (empfohlen getrennt; falls leer -> fallback auf DEST_DIR)
+      JELLYFIN_MOVIES_DIR: "/srv/media/movies/inbox"
+      JELLYFIN_SERIES_DIR: "/srv/media/series/inbox"
+      # Fallback:
+      JELLYFIN_DEST_DIR: "/srv/media/movies/inbox"
 
       POLL_SECONDS: "5"
 
+      # Optional Basic Auth (leer = aus)
+      BASIC_AUTH_USER: "admin"
+      BASIC_AUTH_PASS: "CHANGE_ME"
+
     volumes:
+      # Muss identisch zum JD Mount sein, damit /output stimmt
       - ./data/jd-output:/output:ro
+
+      # SSH Key für Upload zur Jellyfin-VM
       - ~/.ssh/id_ed25519:/ssh/id_ed25519:ro
