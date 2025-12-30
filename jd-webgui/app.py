@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-import myjdapi
+from myjdapi import Myjdapi
 import paramiko
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -133,10 +133,10 @@ def ensure_env():
         raise RuntimeError("Missing env vars: " + ", ".join(missing))
 
 def get_device():
-    jd = myjdapi.myjdapi()
+    jd = Myjdapi()
     jd.connect(MYJD_EMAIL, MYJD_PASSWORD)
-    jd.getDevices()
-    dev = jd.getDevice(name=MYJD_DEVICE)
+    jd.update_devices()
+    dev = jd.get_device(MYJD_DEVICE)
     if dev is None:
         raise RuntimeError(f"MyJDownloader device not found: {MYJD_DEVICE}")
     return dev
