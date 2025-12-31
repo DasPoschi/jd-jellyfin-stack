@@ -3,17 +3,17 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import re
 import shlex
 import subprocess
 import threading
 import time
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
-import json
-import urllib.request
-import urllib.parse
 
 from myjdapi import Myjdapi
 import paramiko
@@ -33,23 +33,10 @@ JELLYFIN_PORT = int(os.environ.get("JELLYFIN_PORT", "22"))
 JELLYFIN_USER = os.environ.get("JELLYFIN_USER", "")
 JELLYFIN_SSH_KEY = os.environ.get("JELLYFIN_SSH_KEY", "/ssh/id_ed25519")
 
-# Optional: getrennte Ziele für Filme/Serien
 JELLYFIN_MOVIES_DIR = os.environ.get("JELLYFIN_MOVIES_DIR", "").rstrip("/")
 JELLYFIN_SERIES_DIR = os.environ.get("JELLYFIN_SERIES_DIR", "").rstrip("/")
+JELLYFIN_DEST_DIR = os.environ.get("JELLYFIN_DEST_DIR", "/jellyfin/Filme").rstrip("/")
 
-# Fallback-Ziel (wenn movies/series nicht gesetzt)
-JELLYFIN_DEST_DIR = os.environ.get("JELLYFIN_DEST_DIR", "/srv/media/movies/inbox").rstrip("/")
-
-# Auth (optional)
-BASIC_AUTH_USER = os.environ.get("BASIC_AUTH_USER", "")
-BASIC_AUTH_PASS = os.environ.get("BASIC_AUTH_PASS", "")
-
-POLL_SECONDS = float(os.environ.get("POLL_SECONDS", "5"))
-
-# JDownloader speichert im Container nach /output
-JD_OUTPUT_PATH = "/output"
-
-URL_RE = re.compile(r"^https?://", re.I)
 JELLYFIN_API_BASE = os.environ.get("JELLYFIN_API_BASE", "").rstrip("/")
 JELLYFIN_API_KEY = os.environ.get("JELLYFIN_API_KEY", "")
 JELLYFIN_LIBRARY_REFRESH = os.environ.get("JELLYFIN_LIBRARY_REFRESH", "false").lower() == "true"
@@ -60,17 +47,25 @@ TMDB_LANGUAGE = os.environ.get("TMDB_LANGUAGE", "de-DE")
 CREATE_MOVIE_FOLDER = os.environ.get("CREATE_MOVIE_FOLDER", "true").lower() == "true"
 CREATE_SERIES_FOLDERS = os.environ.get("CREATE_SERIES_FOLDERS", "true").lower() == "true"
 
-MD5_DIR = os.environ.get("MD5_DIR", "/tmp/md5").rstrip("/")
+MD5_DIR = os.environ.get("MD5_DIR", "/md5").rstrip("/")
 
-# gängige Videoformate
+BASIC_AUTH_USER = os.environ.get("BASIC_AUTH_USER", "")
+BASIC_AUTH_PASS = os.environ.get("BASIC_AUTH_PASS", "")
+
+POLL_SECONDS = float(os.environ.get("POLL_SECONDS", "5"))
+
+# JDownloader writes here inside container
+JD_OUTPUT_PATH = "/output"
+
+URL_RE = re.compile(r"^https?://", re.I)
+
 VIDEO_EXTS = {
     ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".flv", ".webm",
     ".ts", ".m2ts", ".mts", ".mpg", ".mpeg", ".vob", ".ogv",
-    ".3gp", ".3g2"
+    ".3gp", ".3g2",
 }
 IGNORE_EXTS = {".part", ".tmp", ".crdownload"}
 
-# Serien-Heuristik (S01E02 etc.)
 SERIES_RE = re.compile(r"(?:^|[^a-z0-9])S(\d{1,2})E(\d{1,2})(?:[^a-z0-9]|$)", re.IGNORECASE)
 
 app = FastAPI()
@@ -127,35 +122,67 @@ jobs: Dict[str, Job] = {}
 lock = threading.Lock()
 
 # ============================================================
-# Helpers
+# Core helpers
 # ============================================================
 def ensure_env():
     missing = []
     for k, v in [
         ("MYJD_EMAIL", MYJD_EMAIL),
         ("MYJD_PASSWORD", MYJD_PASSWORD),
-        ("MYJD_DEVICE", MYJD_DEVICE),
         ("JELLYFIN_USER", JELLYFIN_USER),
         ("JELLYFIN_SSH_KEY", JELLYFIN_SSH_KEY),
     ]:
         if not v:
             missing.append(k)
-    # Zielverzeichnisse: entweder MOVIES/SERIES oder DEST
+
     if not (JELLYFIN_DEST_DIR or (JELLYFIN_MOVIES_DIR and JELLYFIN_SERIES_DIR)):
         missing.append("JELLYFIN_DEST_DIR or (JELLYFIN_MOVIES_DIR+JELLYFIN_SERIES_DIR)")
-    if missing:
-        raise RuntimeError("Missing env vars: " + ", ".join(missing))
+
     if JELLYFIN_LIBRARY_REFRESH and not (JELLYFIN_API_BASE and JELLYFIN_API_KEY):
         missing.append("JELLYFIN_API_BASE+JELLYFIN_API_KEY (required when JELLYFIN_LIBRARY_REFRESH=true)")
 
+    if missing:
+        raise RuntimeError("Missing env vars: " + ", ".join(missing))
+
 def get_device():
+    """
+    Connects to MyJDownloader and returns a device.
+    If MYJD_DEVICE is empty or not found, falls back to the first available device.
+    """
     jd = Myjdapi()
     jd.connect(MYJD_EMAIL, MYJD_PASSWORD)
     jd.update_devices()
-    dev = jd.get_device(MYJD_DEVICE)
-    if dev is None:
-        raise RuntimeError(f"MyJDownloader device not found: {MYJD_DEVICE}")
-    return dev
+
+    devices = getattr(jd, "devices", None) or []
+    if not devices:
+        raise RuntimeError("No MyJDownloader devices available (is JDownloader online/logged in?)")
+
+    wanted = (MYJD_DEVICE or "").strip()
+    if wanted:
+        try:
+            return jd.get_device(wanted)
+        except Exception:
+            pass
+
+    # Prefer a device that looks like JD
+    for d in devices:
+        n = (d.get("name") or "").strip()
+        if not n:
+            continue
+        nl = n.lower()
+        if "jdownloader" in nl or nl in {"jd", "jd2"}:
+            try:
+                return jd.get_device(n)
+            except Exception:
+                pass
+
+    # Otherwise pick first device by name
+    for d in devices:
+        n = (d.get("name") or "").strip()
+        if n:
+            return jd.get_device(n)
+
+    raise RuntimeError("MyJDownloader devices list had no usable names")
 
 def is_video_file(path: str) -> bool:
     name = os.path.basename(path).lower()
@@ -179,12 +206,7 @@ def write_md5_sidecar(file_path: str, md5_hex: str) -> str:
         f.write(f"{md5_hex}  {base}\n")
     return md5_path
 
-
 def ffprobe_ok(path: str) -> bool:
-    """
-    Validiert, dass die Datei wirklich ein Video ist (Container/Streams lesbar).
-    Erfordert ffprobe im Container (kommt über Dockerfile).
-    """
     try:
         cp = subprocess.run(
             ["ffprobe", "-v", "error", "-show_streams", "-select_streams", "v:0", path],
@@ -197,6 +219,9 @@ def ffprobe_ok(path: str) -> bool:
     except Exception:
         return False
 
+# ============================================================
+# SSH/SFTP
+# ============================================================
 def ssh_connect() -> paramiko.SSHClient:
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -239,11 +264,38 @@ def remote_md5sum(ssh: paramiko.SSHClient, remote_path: str) -> str:
         raise RuntimeError("Remote md5sum returned empty output")
     return out.split()[0]
 
+# ============================================================
+# TMDB & naming
+# ============================================================
+def _http_get_json(url: str, headers: Optional[Dict[str, str]] = None) -> Any:
+    req = urllib.request.Request(url, headers=headers or {})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode("utf-8", "replace"))
+
+def tmdb_search_movie(query: str) -> Optional[Dict[str, Any]]:
+    if not TMDB_API_KEY or not query.strip():
+        return None
+    q = urllib.parse.quote(query.strip())
+    url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&language={urllib.parse.quote(TMDB_LANGUAGE)}&query={q}"
+    data = _http_get_json(url)
+    results = data.get("results") or []
+    return results[0] if results else None
+
+def tmdb_search_tv(query: str) -> Optional[Dict[str, Any]]:
+    if not TMDB_API_KEY or not query.strip():
+        return None
+    q = urllib.parse.quote(query.strip())
+    url = f"https://api.themoviedb.org/3/search/tv?api_key={TMDB_API_KEY}&language={urllib.parse.quote(TMDB_LANGUAGE)}&query={q}"
+    data = _http_get_json(url)
+    results = data.get("results") or []
+    return results[0] if results else None
+
+def sanitize_name(name: str) -> str:
+    bad = '<>:"/\\|?*'
+    out = "".join("_" if c in bad else c for c in name).strip()
+    return re.sub(r"\s+", " ", out)
+
 def pick_library_target(library_choice: str, filename: str, package_name: str) -> str:
-    """
-    - library_choice: movies|series|auto
-    - auto: heuristic SxxEyy in filename or package
-    """
     if library_choice not in {"movies", "series", "auto"}:
         library_choice = "auto"
 
@@ -258,9 +310,71 @@ def pick_library_target(library_choice: str, filename: str, package_name: str) -
     if library_choice == "series" and JELLYFIN_SERIES_DIR:
         return JELLYFIN_SERIES_DIR
 
-    # fallback
     return JELLYFIN_DEST_DIR
 
+def build_remote_paths(job_library: str, package_name: str, local_file: str) -> Tuple[str, str]:
+    filename = os.path.basename(local_file)
+    base_target = pick_library_target(job_library, filename, package_name)
+
+    m = SERIES_RE.search(filename) or SERIES_RE.search(package_name or "")
+    is_series = (job_library == "series") or (job_library == "auto" and m)
+
+    if is_series:
+        show_query = package_name or os.path.splitext(filename)[0]
+        tv = tmdb_search_tv(show_query) if TMDB_API_KEY else None
+        show_name = sanitize_name(tv["name"]) if tv and tv.get("name") else sanitize_name(show_query)
+
+        season = int(m.group(1)) if m else 1
+        episode = int(m.group(2)) if m else 1
+
+        if CREATE_SERIES_FOLDERS:
+            remote_dir = f"{base_target}/{show_name}/Season {season:02d}"
+        else:
+            remote_dir = base_target
+
+        ext = os.path.splitext(filename)[1]
+        remote_filename = f"{show_name} - S{season:02d}E{episode:02d}{ext}"
+        return remote_dir, remote_filename
+
+    movie_query = package_name or os.path.splitext(filename)[0]
+    mv = tmdb_search_movie(movie_query) if TMDB_API_KEY else None
+    title = mv.get("title") if mv else None
+    date = mv.get("release_date") if mv else None
+    year = date[:4] if isinstance(date, str) and len(date) >= 4 else None
+
+    title_safe = sanitize_name(title) if title else sanitize_name(movie_query)
+    year_safe = year if year else ""
+
+    if CREATE_MOVIE_FOLDER:
+        folder = f"{title_safe} ({year_safe})".strip() if year_safe else title_safe
+        remote_dir = f"{base_target}/{folder}"
+    else:
+        remote_dir = base_target
+
+    ext = os.path.splitext(filename)[1]
+    remote_filename = f"{title_safe} ({year_safe}){ext}".strip() if year_safe else f"{title_safe}{ext}"
+    return remote_dir, remote_filename
+
+# ============================================================
+# Jellyfin refresh (optional)
+# ============================================================
+def jellyfin_refresh_library():
+    if not (JELLYFIN_API_BASE and JELLYFIN_API_KEY):
+        return
+    headers = {"X-MediaBrowser-Token": JELLYFIN_API_KEY}
+    for path in ("/Library/Refresh", "/library/refresh"):
+        try:
+            url = JELLYFIN_API_BASE + path
+            req = urllib.request.Request(url, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=20) as r:
+                _ = r.read()
+            return
+        except Exception:
+            continue
+
+# ============================================================
+# JDownloader queries/cleanup (best effort)
+# ============================================================
 def query_links_and_packages(dev, jobid: str) -> Tuple[List[Dict[str, Any]], Dict[Any, Dict[str, Any]]]:
     links = dev.downloads.query_links([{
         "jobUUIDs": [int(jobid)] if jobid.isdigit() else [jobid],
@@ -298,7 +412,6 @@ def local_paths_from_links(links: List[Dict[str, Any]], pkg_map: Dict[Any, Dict[
         base = save_to if isinstance(save_to, str) else JD_OUTPUT_PATH
         paths.append(os.path.join(base, name))
 
-    # dedupe
     out, seen = [], set()
     for p in paths:
         if p not in seen:
@@ -307,13 +420,9 @@ def local_paths_from_links(links: List[Dict[str, Any]], pkg_map: Dict[Any, Dict[
     return out
 
 def try_remove_from_jd(dev, links: List[Dict[str, Any]], pkg_map: Dict[Any, Dict[str, Any]]) -> Optional[str]:
-    """
-    Best effort removal. Wrapper/API version differences exist.
-    """
     link_ids = [l.get("uuid") for l in links if l.get("uuid") is not None]
     pkg_ids = list(pkg_map.keys())
 
-    # Try several known method names & payload styles
     candidates = [
         ("downloads", "removeLinks"),
         ("downloads", "remove_links"),
@@ -339,110 +448,12 @@ def try_remove_from_jd(dev, links: List[Dict[str, Any]], pkg_map: Dict[Any, Dict
             continue
         for payload in payloads:
             try:
-                meth([payload])  # most wrappers expect list
+                meth([payload])
                 return None
             except Exception:
                 continue
 
     return "JDownloader-API: Paket/Links konnten nicht entfernt werden (Wrapper-Methoden nicht vorhanden)."
-
-def _http_get_json(url: str, headers: Optional[Dict[str, str]] = None) -> Any:
-    req = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.loads(r.read().decode("utf-8", "replace"))
-
-def tmdb_search_movie(query: str) -> Optional[Dict[str, Any]]:
-    if not TMDB_API_KEY or not query.strip():
-        return None
-    q = urllib.parse.quote(query.strip())
-    url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&language={urllib.parse.quote(TMDB_LANGUAGE)}&query={q}"
-    data = _http_get_json(url)
-    results = data.get("results") or []
-    return results[0] if results else None
-
-def tmdb_search_tv(query: str) -> Optional[Dict[str, Any]]:
-    if not TMDB_API_KEY or not query.strip():
-        return None
-    q = urllib.parse.quote(query.strip())
-    url = f"https://api.themoviedb.org/3/search/tv?api_key={TMDB_API_KEY}&language={urllib.parse.quote(TMDB_LANGUAGE)}&query={q}"
-    data = _http_get_json(url)
-    results = data.get("results") or []
-    return results[0] if results else None
-
-def sanitize_name(name: str) -> str:
-    # Windows/SMB safe
-    bad = '<>:"/\\\\|?*'
-    out = "".join("_" if c in bad else c for c in name).strip()
-    return re.sub(r"\s+", " ", out)
-
-def build_remote_paths(job_library: str, package_name: str, local_file: str) -> Tuple[str, str]:
-    """
-    Returns: (remote_dir, remote_filename)
-    """
-    filename = os.path.basename(local_file)
-    base_target = pick_library_target(job_library, filename, package_name)  # nutzt env movies/series/fallback
-
-    # Serien-Erkennung
-    m = SERIES_RE.search(filename) or SERIES_RE.search(package_name or "")
-    is_series = (job_library == "series") or (job_library == "auto" and m)
-
-    if is_series:
-        # Show-Name via TMDB (optional)
-        show_query = package_name or os.path.splitext(filename)[0]
-        tv = tmdb_search_tv(show_query) if TMDB_API_KEY else None
-        show_name = sanitize_name(tv["name"]) if tv and tv.get("name") else sanitize_name(show_query)
-
-        season = int(m.group(1)) if m else 1
-        # Remote dir: /Serien/Show/Season 01
-        if CREATE_SERIES_FOLDERS:
-            remote_dir = f"{base_target}/{show_name}/Season {season:02d}"
-        else:
-            remote_dir = base_target
-
-        # Dateiname bleibt, oder optional: Show - S01E02.ext
-        ext = os.path.splitext(filename)[1]
-        if m:
-            remote_filename = f"{show_name} - S{season:02d}E{int(m.group(2)):02d}{ext}"
-        else:
-            remote_filename = filename
-        return remote_dir, remote_filename
-
-    # Movie: TMDB (optional)
-    movie_query = package_name or os.path.splitext(filename)[0]
-    mv = tmdb_search_movie(movie_query) if TMDB_API_KEY else None
-    title = mv.get("title") if mv else None
-    date = mv.get("release_date") if mv else None
-    year = date[:4] if isinstance(date, str) and len(date) >= 4 else None
-
-    title_safe = sanitize_name(title) if title else sanitize_name(movie_query)
-    year_safe = year if year else ""
-
-    # Ordner pro Film
-    if CREATE_MOVIE_FOLDER:
-        folder = f"{title_safe} ({year_safe})".strip() if year_safe else title_safe
-        remote_dir = f"{base_target}/{folder}"
-    else:
-        remote_dir = base_target
-
-    ext = os.path.splitext(filename)[1]
-    remote_filename = f"{title_safe} ({year_safe}){ext}".strip() if year_safe else f"{title_safe}{ext}"
-    return remote_dir, remote_filename
-
-def jellyfin_refresh_library():
-    if not (JELLYFIN_API_BASE and JELLYFIN_API_KEY):
-        return
-    # Jellyfin akzeptiert Token in Headern; /Library/Refresh bzw /library/refresh werden je nach Version genutzt. :contentReference[oaicite:0]{index=0}
-    headers = {"X-MediaBrowser-Token": JELLYFIN_API_KEY}
-    for path in ("/Library/Refresh", "/library/refresh"):
-        try:
-            url = JELLYFIN_API_BASE + path
-            req = urllib.request.Request(url, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=20) as r:
-                _ = r.read()
-            return
-        except Exception:
-            continue
-
 
 # ============================================================
 # Worker
@@ -485,12 +496,11 @@ def worker(jobid: str):
                     job.message = "Keine Video-Datei gefunden (Whitelist)."
                 return
 
-            # ffprobe validation (only keep valid videos)
             valid_videos = [p for p in video_files if ffprobe_ok(p)]
             if not valid_videos:
                 with lock:
                     job.status = "failed"
-                    job.message = "ffprobe: keine gültige Video-Datei (oder ffprobe fehlt)."
+                    job.message = "ffprobe: keine gültige Video-Datei."
                 return
 
             with lock:
@@ -500,26 +510,21 @@ def worker(jobid: str):
             ssh = ssh_connect()
             try:
                 for f in valid_videos:
-                    fn = os.path.basename(f)
+                    md5_hex = md5_file(f)
+                    md5_path = write_md5_sidecar(f, md5_hex)
+
                     remote_dir, remote_name = build_remote_paths(job.library, job.package_name, f)
                     remote_file = f"{remote_dir}/{remote_name}"
                     remote_md5f = remote_file + ".md5"
 
-
-                    # MD5 local
-                    md5_hex = md5_file(f)
-                    md5_path = write_md5_sidecar(f, md5_hex)
-
-                    # Upload file + md5
                     sftp_upload(ssh, f, remote_file)
                     sftp_upload(ssh, md5_path, remote_md5f)
 
-                    # Verify remote
                     remote_md5 = remote_md5sum(ssh, remote_file)
                     if remote_md5.lower() != md5_hex.lower():
-                        raise RuntimeError(f"MD5 mismatch for {fn}: local={md5_hex} remote={remote_md5}")
+                        raise RuntimeError(f"MD5 mismatch for {os.path.basename(f)}: local={md5_hex} remote={remote_md5}")
 
-                    # Cleanup local after successful verify
+                    # Cleanup local
                     try:
                         os.remove(f)
                     except Exception:
@@ -532,11 +537,10 @@ def worker(jobid: str):
             finally:
                 ssh.close()
 
+            jd_cleanup_msg = try_remove_from_jd(dev, links, pkg_map)
+
             if JELLYFIN_LIBRARY_REFRESH:
                 jellyfin_refresh_library()
-
-            # Cleanup JD package/links (best effort)
-            jd_cleanup_msg = try_remove_from_jd(dev, links, pkg_map)
 
             with lock:
                 job.status = "finished"
@@ -553,10 +557,15 @@ def worker(jobid: str):
 # ============================================================
 # Web
 # ============================================================
+@app.get("/favicon.ico")
+def favicon():
+    return HTMLResponse(status_code=204)
+
 def render_page(error: str = "") -> str:
     rows = ""
     with lock:
         job_list = list(jobs.values())[::-1]
+
     for j in job_list:
         rows += (
             f"<tr>"
