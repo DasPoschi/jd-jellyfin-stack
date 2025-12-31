@@ -2,29 +2,29 @@ version: "3.8"
 
 services:
   jdownloader:
-    image: ${JD_IMAGE}
-    container_name: ${JD_CONTAINER_NAME}
+    image: jlesage/jdownloader-2:latest
+    container_name: jdownloader-2
     restart: unless-stopped
     ports:
-      - "${JD_WEB_PORT}:5800"
+      - "5800:5800"
     environment:
-      TZ: ${TZ}
+      TZ: Europe/Berlin
     volumes:
       - ./data/jd-config:/config
       - ./data/jd-output:/output
 
   jd-webgui:
     build: ./jd-webgui
-    container_name: ${WEBGUI_CONTAINER_NAME}
+    container_name: jd-webgui
     restart: unless-stopped
     depends_on:
       - jdownloader
     ports:
-      - "${WEBGUI_PORT}:8080"
+      - "8080:8080"
     env_file:
       - .env
     environment:
-      TZ: ${TZ}
+      TZ: Europe/Berlin
     volumes:
       - ./data/jd-output:/output:ro
       - ./data/md5:/md5:rw
