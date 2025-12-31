@@ -1,34 +1,51 @@
 # JD → Jellyfin WebGUI (Docker)
 
-Web-GUI:
-- Link einfügen (z. B. YouTube)
-- Remote Download via MyJDownloader
-- nur gängige Videoformate (Whitelist)
-- ffprobe-Validierung (echtes Video)
-- MD5 lokal + Upload per SFTP + MD5-Verify auf Jellyfin-VM
-- Cleanup: lokale Datei + lokale .md5 löschen
-- Cleanup: JDownloader Paket/Links entfernen (best effort, abhängig vom API-Wrapper)
+Web GUI to:
+- paste a URL (e.g. YouTube)
+- download via **MyJDownloader**
+- validate video with **ffprobe**
+- compute **MD5** locally, upload via **SFTP**
+- verify **MD5** on the Jellyfin VM
+- cleanup local file + remove JD package/links (best effort)
+- optional: **TMDB naming**, **movie/series folders**, **Jellyfin library refresh**
 
-## Voraussetzungen
-- Docker + Docker Compose
-- JDownloader-Container (im Compose enthalten)
-- Jellyfin läuft auf einer VM (Beispiel: 192.168.1.1)
-- SSH-Zugang zur Jellyfin-VM
-- Zielordner auf Jellyfin-VM existiert + Schreibrechte für SSH-User
-- Auf Jellyfin-VM muss `md5sum` vorhanden sein (i. d. R. coreutils)
+## Files
+- `docker-compose.yml` – stack
+- `.env.example` – copy to `.env` and fill values
+- `jd-webgui/app.py` – FastAPI web app
+- `jd-webgui/Dockerfile` – includes ffprobe
 
-## Quickstart
-1) Repo klonen oder Dateien anlegen
-2) SSH Key vorhanden (empfohlen):
-   - auf dem Docker-Host: `~/.ssh/id_ed25519`
-   - Public Key auf Jellyfin-VM in `~/.ssh/authorized_keys` des Upload-Users
+## Setup
+1. Copy env file:
+```bash
+cp .env.example .env
+```
 
-3) docker-compose.yml anpassen:
-   - MYJD_EMAIL / MYJD_PASSWORD / MYJD_DEVICE
-   - JELLYFIN_HOST / JELLYFIN_USER
-   - JELLYFIN_MOVIES_DIR / JELLYFIN_SERIES_DIR
-   - BASIC_AUTH_USER/PASS (optional)
+2. Edit `.env`:
+- `MYJD_EMAIL`, `MYJD_PASSWORD`
+- `JELLYFIN_HOST`, `JELLYFIN_USER`, target dirs
+- `SSH_KEY_PATH` (absolute path on Docker host)
+- Optional: `JELLYFIN_API_KEY`, `TMDB_API_KEY`
 
-4) Start:
+3. Start:
 ```bash
 docker compose up -d --build
+```
+
+4. Open WebGUI:
+- `http://<docker-host>:${WEBGUI_PORT}`
+
+## Notes
+- JDownloader must be logged into MyJDownloader and appear as an online device.
+- If `MYJD_DEVICE` is empty, the WebGUI will automatically pick the first available device.
+- Ensure the SSH user can write to `/jellyfin/Filme` (and series dir if used).
+
+## Troubleshooting
+- Device not found: list devices
+```bash
+docker exec -it jd-webgui python -c "from myjdapi import Myjdapi; import os; jd=Myjdapi(); jd.connect(os.environ['MYJD_EMAIL'], os.environ['MYJD_PASSWORD']); jd.update_devices(); print([d.get('name') for d in jd.devices])"
+```
+- Check container can see downloads:
+```bash
+docker exec -it jd-webgui ls -la /output | head
+```
