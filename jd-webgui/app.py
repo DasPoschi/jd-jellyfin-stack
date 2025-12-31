@@ -157,15 +157,14 @@ def get_device():
     if devices is None:
         raise RuntimeError("MyJDownloader API returned no device list")
 
-if not devices:
-    # Devices exist laut Server, aber noch nicht synchron
-    time.sleep(2)
-    jd.update_devices()
-    devices = getattr(jd, "devices", []) or []
+    # sometimes devices appear with a short delay
+    if not devices:
+        time.sleep(2)
+        jd.update_devices()
+        devices = getattr(jd, "devices", []) or []
 
-if not devices:
-    raise RuntimeError("MyJDownloader connected but no devices visible yet")
-
+    if not devices:
+        raise RuntimeError("No MyJDownloader devices available (is JDownloader online/logged in?)")
 
     wanted = (MYJD_DEVICE or "").strip()
     if wanted:
