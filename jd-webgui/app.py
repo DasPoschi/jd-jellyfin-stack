@@ -148,42 +148,46 @@ def get_device():
     jd = Myjdapi()
     jd.connect(MYJD_EMAIL, MYJD_PASSWORD)
 
-    # list_devices() is reliable in your myjdapi version
-    devices = jd.list_devices()
-    if not devices:
-        raise RuntimeError("No MyJDownloader devices available (JD online/logged in?)")
-
-    # devices is typically a list of dicts; accept strings too
-    def dev_name(d):
-        if isinstance(d, str):
-            return d
-        if isinstance(d, dict):
-            return (d.get("name") or d.get("deviceName") or "").strip()
-        return ""
-
-    names = [dev_name(d) for d in devices]
-    names = [n for n in names if n]
-
-    if not names:
-        raise RuntimeError(f"MyJDownloader returned devices but no usable names: {devices}")
-
     wanted = (MYJD_DEVICE or "").strip()
-    if wanted:
-        for n in names:
-            if n == wanted:
-                return jd.get_device(n)
-        for n in names:
-            if n.lower() == wanted.lower():
-                return jd.get_device(n)
-        raise RuntimeError(f"MYJD_DEVICE not found. Wanted '{wanted}', available: {names}")
 
-    # Prefer JDownloader-ish name
-    for n in names:
-        nl = n.lower()
-        if "jdownloader" in nl or nl in {"jd", "jd2"}:
-            return jd.get_device(n)
+    # wait up to 30s for device to become ONLINE
+    deadline = time.time() + 30
+    last = None
+    while time.time() < deadline:
+        devs = jd.list_devices() or []
+        last = devs
 
-    return jd.get_device(names[0])
+        # pick by name (or first)
+        def pick():
+            if wanted:
+                for d in devs:
+                    if (d.get("name") or "") == wanted:
+                        return d
+                for d in devs:
+                    if (d.get("name") or "").lower() == wanted.lower():
+                        return d
+                return None
+            return devs[0] if devs else None
+
+        d = pick()
+        if not d:
+            time.sleep(2)
+            continue
+
+        status = (d.get("status") or "").upper()
+        # accept ONLINE/CONNECTED; some setups use different strings
+        if status in {"ONLINE", "CONNECTED"}:
+            return jd.get_device(d["name"])
+
+        # sometimes myjdapi reports UNKNOWN briefly; give it time
+        time.sleep(2)
+
+    # no ONLINE device after waiting
+    if last:
+        names = [(x.get("name"), x.get("status")) for x in last]
+        raise RuntimeError(f"MyJDownloader device not ONLINE yet. Devices: {names}")
+    raise RuntimeError("No MyJDownloader devices available (JD online/logged in?)")
+
 
 
 def is_video_file(path: str) -> bool:
