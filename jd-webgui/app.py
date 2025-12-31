@@ -204,10 +204,36 @@ def md5_file(path: str) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+_md5_dir_cache: Optional[str] = None
+
+def pick_md5_dir() -> str:
+    global _md5_dir_cache
+    if _md5_dir_cache:
+        return _md5_dir_cache
+
+    candidates = [
+        MD5_DIR,
+        os.path.join(JD_OUTPUT_PATH, ".md5"),
+        "/tmp/jd-md5",
+    ]
+
+    for candidate in candidates:
+        try:
+            os.makedirs(candidate, exist_ok=True)
+        except Exception:
+            continue
+        if os.access(candidate, os.W_OK):
+            _md5_dir_cache = candidate
+            return candidate
+
+    raise RuntimeError(
+        "Kein beschreibbares MD5-Verzeichnis gefunden (MD5_DIR, /output/.md5, /tmp/jd-md5)."
+    )
+
 def write_md5_sidecar(file_path: str, md5_hex: str) -> str:
-    os.makedirs(MD5_DIR, exist_ok=True)
+    md5_dir = pick_md5_dir()
     base = os.path.basename(file_path)
-    md5_path = os.path.join(MD5_DIR, base + ".md5")
+    md5_path = os.path.join(md5_dir, base + ".md5")
     with open(md5_path, "w", encoding="utf-8") as f:
         f.write(f"{md5_hex}  {base}\n")
     return md5_path
