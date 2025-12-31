@@ -28,4 +28,4 @@ services:
     volumes:
       - ./data/jd-output:/output:ro
       - ./data/md5:/md5:rw
-      - ${SSH_KEY_PATH}:/ssh/id_ed25519:ro
+      - /root/.ssh/id_ed25519:/ssh/id_ed25519:ro
