@@ -174,13 +174,13 @@ def get_device():
             time.sleep(2)
             continue
 
-        status = (d.get("status") or "").upper()
-        # accept ONLINE/CONNECTED; some setups use different strings
-        if status in {"ONLINE", "CONNECTED"}:
-            return jd.get_device(d["name"])
+       status = (d.get("status") or "").upper()
+       if status not in {"ONLINE", "CONNECTED"}:
+           # just a warning; do not fail
+           print(f"[WARN] Device status is {status}, continuing anyway...")
+       return jd.get_device(d["name"])
 
-        # sometimes myjdapi reports UNKNOWN briefly; give it time
-        time.sleep(2)
+
 
     # no ONLINE device after waiting
     if last:
