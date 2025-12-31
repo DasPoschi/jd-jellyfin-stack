@@ -145,53 +145,71 @@ def ensure_env():
         raise RuntimeError("Missing env vars: " + ", ".join(missing))
 
 def get_device():
-    """
-    Connects to MyJDownloader and returns a device.
-    If MYJD_DEVICE is empty or not found, falls back to the first available device.
-    """
     jd = Myjdapi()
     jd.connect(MYJD_EMAIL, MYJD_PASSWORD)
-    jd.update_devices()
 
-    devices = getattr(jd, "devices", None)
-    if devices is None:
-        raise RuntimeError("MyJDownloader API returned no device list")
+    # Try to retrieve device list across myjdapi versions
+    devices = None
 
-    # sometimes devices appear with a short delay
-    if not devices:
-        time.sleep(2)
+    # v1: update_devices() + attribute
+    try:
         jd.update_devices()
-        devices = getattr(jd, "devices", []) or []
+        devices = getattr(jd, "devices", None)
+    except Exception:
+        devices = None
+
+    # v2: list_devices() returns a list
+    if devices is None:
+        try:
+            devices = jd.list_devices()
+        except Exception:
+            devices = None
+
+    # v3: get_devices() / getDevices()
+    if devices is None:
+        for fn in ("get_devices", "getDevices"):
+            try:
+                devices = getattr(jd, fn)()
+                break
+            except Exception:
+                continue
 
     if not devices:
-        raise RuntimeError("No MyJDownloader devices available (is JDownloader online/logged in?)")
+        raise RuntimeError("No MyJDownloader devices available (JD online? correct credentials?)")
+
+    # devices may be list[str] or list[dict]
+    def dev_name(d):
+        if isinstance(d, str):
+            return d
+        if isinstance(d, dict):
+            return d.get("name") or d.get("deviceName") or d.get("id") or ""
+        return ""
+
+    names = [dev_name(d).strip() for d in devices]
+    names = [n for n in names if n]
+
+    if not names:
+        raise RuntimeError(f"MyJDownloader returned devices but no names: {devices}")
 
     wanted = (MYJD_DEVICE or "").strip()
     if wanted:
-        try:
-            return jd.get_device(wanted)
-        except Exception:
-            pass
+        # exact match first
+        for n in names:
+            if n == wanted:
+                return jd.get_device(n)
+        # case-insensitive fallback
+        for n in names:
+            if n.lower() == wanted.lower():
+                return jd.get_device(n)
 
-    # Prefer a device that looks like JD
-    for d in devices:
-        n = (d.get("name") or "").strip()
-        if not n:
-            continue
+    # Prefer "jdownloader" looking device
+    for n in names:
         nl = n.lower()
         if "jdownloader" in nl or nl in {"jd", "jd2"}:
-            try:
-                return jd.get_device(n)
-            except Exception:
-                pass
-
-    # Otherwise pick first device by name
-    for d in devices:
-        n = (d.get("name") or "").strip()
-        if n:
             return jd.get_device(n)
 
-    raise RuntimeError("MyJDownloader devices list had no usable names")
+    # Otherwise first
+    return jd.get_device(names[0])
 
 def is_video_file(path: str) -> bool:
     name = os.path.basename(path).lower()
