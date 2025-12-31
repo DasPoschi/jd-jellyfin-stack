@@ -174,11 +174,11 @@ def get_device():
             time.sleep(2)
             continue
 
-       status = (d.get("status") or "").upper()
-       if status not in {"ONLINE", "CONNECTED"}:
-           # just a warning; do not fail
-           print(f"[WARN] Device status is {status}, continuing anyway...")
-       return jd.get_device(d["name"])
+        status = (d.get("status") or "").upper()
+        if status not in {"ONLINE", "CONNECTED"}:
+            # just a warning; do not fail
+            print(f"[WARN] Device status is {status}, continuing anyway...")
+        return jd.get_device(d["name"])
 
 
 
