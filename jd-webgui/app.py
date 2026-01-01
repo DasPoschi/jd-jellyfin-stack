@@ -283,7 +283,10 @@ def tmdb_search_movie(query: str) -> Optional[Dict[str, Any]]:
         return None
     q = urllib.parse.quote(query.strip())
     url = f"https://api.themoviedb.org/3/search/movie?api_key={TMDB_API_KEY}&language={urllib.parse.quote(TMDB_LANGUAGE)}&query={q}"
-    data = _http_get_json(url)
+    try:
+        data = _http_get_json(url)
+    except Exception:
+        return None
     results = data.get("results") or []
     return results[0] if results else None
 
@@ -292,7 +295,10 @@ def tmdb_search_tv(query: str) -> Optional[Dict[str, Any]]:
         return None
     q = urllib.parse.quote(query.strip())
     url = f"https://api.themoviedb.org/3/search/tv?api_key={TMDB_API_KEY}&language={urllib.parse.quote(TMDB_LANGUAGE)}&query={q}"
-    data = _http_get_json(url)
+    try:
+        data = _http_get_json(url)
+    except Exception:
+        return None
     results = data.get("results") or []
     return results[0] if results else None
 
