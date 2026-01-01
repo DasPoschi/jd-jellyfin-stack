@@ -366,15 +366,55 @@ def fetch_proxy_list(url: str) -> str:
     with urllib.request.urlopen(req, timeout=20) as resp:
         return resp.read().decode("utf-8", "replace")
 
-def save_proxy_export(text: str) -> str:
+def build_jdproxies_payload(text: str) -> Dict[str, Any]:
     if not text.strip():
         raise ValueError("Keine Proxy-Einträge zum Speichern.")
+    entries: List[Dict[str, Any]] = []
+    type_map = {
+        "socks5": "SOCKS5",
+        "socks4": "SOCKS4",
+        "http": "HTTP",
+    }
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        parsed = urllib.parse.urlparse(s)
+        if not parsed.scheme or not parsed.hostname or parsed.port is None:
+            continue
+        proxy_type = type_map.get(parsed.scheme.lower())
+        if not proxy_type:
+            continue
+        entries.append({
+            "filter": None,
+            "proxy": {
+                "address": parsed.hostname,
+                "password": None,
+                "port": int(parsed.port),
+                "type": proxy_type,
+                "username": None,
+                "connectMethodPrefered": False,
+                "preferNativeImplementation": False,
+                "resolveHostName": False,
+            },
+            "enabled": True,
+            "pac": False,
+            "rangeRequestsSupported": True,
+            "reconnectSupported": False,
+        })
+    if not entries:
+        raise ValueError("Keine gültigen Proxy-Einträge gefunden.")
+    return {"customProxyList": entries}
+
+def save_proxy_export(text: str) -> str:
+    payload = build_jdproxies_payload(text)
     export_path = PROXY_EXPORT_PATH
     export_dir = os.path.dirname(export_path)
     if export_dir:
         os.makedirs(export_dir, exist_ok=True)
     with open(export_path, "w", encoding="utf-8") as handle:
-        handle.write(text.strip() + "\n")
+        handle.write(json.dumps(payload, indent=2))
+        handle.write("\n")
     return export_path
 
 def pick_library_target(library_choice: str, filename: str, package_name: str) -> str:
