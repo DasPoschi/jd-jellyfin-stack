@@ -369,12 +369,49 @@ def fetch_proxy_list(url: str) -> str:
 def build_jdproxies_payload(text: str) -> Dict[str, Any]:
     if not text.strip():
         raise ValueError("Keine Proxy-Einträge zum Speichern.")
+    blacklist_filter = {
+        "entries": [
+            "# Dies ist ein Kommentar",
+            "// Dies ist auch ein Kommentar",
+            "# Für jdownloader.org auskommentieren",
+            "# jdownloader.org",
+            "# unten für alle Accounts mit der ID 'test *' @ jdownloader.org auskommentieren",
+            "#test@jdownloader.org",
+            "# Kommentar unten für ein Konto mit der ID 'test' @ jdownloader.org",
+            "#test$@jdownloader.org",
+            "# Sie können Muster für Konto-ID und Host verwenden, z. B. accountPattern @ hostPattern",
+            "",
+            "my.jdownloader.org",
+            "",
+            "api.jdownloader.org",
+            "",
+            "*.jdownloader.org",
+        ],
+        "type": "BLACKLIST",
+    }
     entries: List[Dict[str, Any]] = []
     type_map = {
         "socks5": "SOCKS5",
         "socks4": "SOCKS4",
         "http": "HTTP",
     }
+    entries.append({
+        "filter": None,
+        "proxy": {
+            "address": None,
+            "password": None,
+            "port": 80,
+            "type": "NONE",
+            "username": None,
+            "connectMethodPrefered": False,
+            "preferNativeImplementation": False,
+            "resolveHostName": False,
+        },
+        "enabled": True,
+        "pac": False,
+        "rangeRequestsSupported": True,
+        "reconnectSupported": True,
+    })
     for line in text.splitlines():
         s = line.strip()
         if not s:
@@ -386,7 +423,7 @@ def build_jdproxies_payload(text: str) -> Dict[str, Any]:
         if not proxy_type:
             continue
         entries.append({
-            "filter": None,
+            "filter": blacklist_filter,
             "proxy": {
                 "address": parsed.hostname,
                 "password": None,
@@ -412,6 +449,8 @@ def save_proxy_export(text: str) -> str:
     export_dir = os.path.dirname(export_path)
     if export_dir:
         os.makedirs(export_dir, exist_ok=True)
+    if os.path.exists(export_path):
+        os.remove(export_path)
     with open(export_path, "w", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, indent=2))
         handle.write("\n")
