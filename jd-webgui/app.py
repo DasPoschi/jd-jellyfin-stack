@@ -56,7 +56,7 @@ POLL_SECONDS = float(os.environ.get("POLL_SECONDS", "5"))
 
 # JDownloader writes here inside container
 JD_OUTPUT_PATH = "/output"
-PROXY_EXPORT_PATH = os.environ.get("PROXY_EXPORT_PATH", "/output/jd-proxies.txt")
+PROXY_EXPORT_PATH = os.environ.get("PROXY_EXPORT_PATH", "/output/jd-proxies.jdproxies")
 
 URL_RE = re.compile(r"^https?://", re.I)
 
@@ -894,13 +894,13 @@ def render_proxies_page(
       <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('out').value)">Kopieren</button>
 
       <h2 style="margin-top:18px;">Datei für Connection Manager</h2>
-      <p class="hint">Speichert die Liste als TXT im Container, z. B. zum Import in JDownloader → Verbindungsmanager → Importieren.</p>
+      <p class="hint">Speichert die Liste als <code>.jdproxies</code> im Container, z. B. zum Import in JDownloader → Verbindungsmanager → Importieren.</p>
 
       <form method="post" action="/proxies/save">
         <textarea name="socks5_in" style="display:none;">{socks5_in}</textarea>
         <textarea name="socks4_in" style="display:none;">{socks4_in}</textarea>
         <textarea name="http_in" style="display:none;">{http_in}</textarea>
-        <button type="submit">Liste als TXT speichern</button>
+        <button type="submit">Liste als JDProxies speichern</button>
       </form>
 
       <p class="hint">Aktueller Pfad: <code>{export_path or PROXY_EXPORT_PATH}</code></p>
