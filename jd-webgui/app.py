@@ -821,7 +821,11 @@ def worker(jobid: str):
 def favicon():
     return HTMLResponse(status_code=204)
 
-def render_page(error: str = "") -> str:
+@app.get("/jobs", response_class=HTMLResponse)
+def jobs_get():
+    return HTMLResponse(render_job_rows())
+
+def render_job_rows() -> str:
     rows = ""
     with lock:
         job_list = list(jobs.values())[::-1]
@@ -851,6 +855,13 @@ def render_page(error: str = "") -> str:
             f"</tr>"
         )
 
+    if not rows:
+        rows = "<tr><td colspan='5'><em>No jobs yet.</em></td></tr>"
+    return rows
+
+def render_page(error: str = "") -> str:
+    rows = render_job_rows()
+
     err_html = f"<p class='error'>{error}</p>" if error else ""
     auth_note = "aktiv" if _auth_enabled() else "aus"
     return f"""
@@ -860,10 +871,18 @@ def render_page(error: str = "") -> str:
       <meta charset="utf-8">
       <title>JD → Jellyfin</title>
       <script>
-        setInterval(() => {{
+        async function refreshJobs() {{
           if (document.hidden) return;
-          window.location.reload();
-        }}, 5000);
+          try {{
+            const resp = await fetch('/jobs');
+            if (!resp.ok) return;
+            const html = await resp.text();
+            const tbody = document.getElementById('jobs-body');
+            if (tbody) tbody.innerHTML = html;
+          }} catch (e) {{
+          }}
+        }}
+        setInterval(refreshJobs, 5000);
       </script>
     </head>
     <body>
@@ -901,8 +920,8 @@ def render_page(error: str = "") -> str:
         <thead>
           <tr><th>JobID</th><th>URL</th><th>Paket</th><th>Ziel</th><th>Status</th></tr>
         </thead>
-        <tbody>
-          {rows if rows else "<tr><td colspan='5'><em>No jobs yet.</em></td></tr>"}
+        <tbody id="jobs-body">
+          {rows}
         </tbody>
       </table>
     </body>
