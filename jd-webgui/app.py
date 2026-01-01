@@ -724,6 +724,12 @@ def render_page(error: str = "") -> str:
       <link rel="stylesheet" href="/static/style.css">
       <meta charset="utf-8">
       <title>JD → Jellyfin</title>
+      <script>
+        setInterval(() => {{
+          if (document.hidden) return;
+          window.location.reload();
+        }}, 5000);
+      </script>
     </head>
     <body>
       <h1>JD → Jellyfin</h1>
