@@ -321,6 +321,50 @@ def sanitize_name(name: str) -> str:
     out = "".join("_" if c in bad else c for c in name).strip()
     return re.sub(r"\s+", " ", out)
 
+def format_proxy_lines(raw: str, scheme: str) -> str:
+    """
+    Takes raw lines (ip:port or scheme://ip:port) and outputs normalized lines:
+    scheme://ip:port (one per line). Ignores empty lines and comments.
+    """
+    scheme = scheme.strip().lower()
+    if scheme not in {"socks5", "socks4", "http"}:
+        raise ValueError("Unsupported proxy scheme")
+
+    out = []
+    for line in (raw or "").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+
+        if "://" in s:
+            s = s.split("://", 1)[1].strip()
+
+        if ":" not in s:
+            continue
+
+        host, port = s.rsplit(":", 1)
+        host = host.strip()
+        port = port.strip()
+
+        if not host or not port.isdigit():
+            continue
+
+        out.append(f"{scheme}://{host}:{port}")
+
+    seen = set()
+    dedup = []
+    for x in out:
+        if x not in seen:
+            seen.add(x)
+            dedup.append(x)
+
+    return "\n".join(dedup)
+
+def fetch_proxy_list(url: str) -> str:
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return resp.read().decode("utf-8", "replace")
+
 def pick_library_target(library_choice: str, filename: str, package_name: str) -> str:
     if library_choice not in {"movies", "series", "auto"}:
         library_choice = "auto"
@@ -733,6 +777,7 @@ def render_page(error: str = "") -> str:
     </head>
     <body>
       <h1>JD → Jellyfin</h1>
+      {render_nav("downloads")}
       {err_html}
 
       <form method="post" action="/submit">
@@ -769,6 +814,62 @@ def render_page(error: str = "") -> str:
           {rows if rows else "<tr><td colspan='5'><em>No jobs yet.</em></td></tr>"}
         </tbody>
       </table>
+    </body>
+    </html>
+    """
+
+def render_nav(active: str) -> str:
+    def link(label: str, href: str, key: str) -> str:
+        style = "font-weight:700;" if active == key else ""
+        return f"<a href='{href}' style='margin-right:14px; {style}'>{label}</a>"
+    return (
+        "<div style='margin: 8px 0 14px 0;'>"
+        + link("Downloads", "/", "downloads")
+        + link("Proxies", "/proxies", "proxies")
+        + "</div>"
+    )
+
+def render_proxies_page(error: str = "", socks5_in: str = "", socks4_in: str = "", http_in: str = "", out_text: str = "") -> str:
+    err_html = f"<p class='error'>{error}</p>" if error else ""
+    return f"""
+    <html>
+    <head>
+      <link rel="stylesheet" href="/static/style.css">
+      <meta charset="utf-8">
+      <title>JD → Jellyfin (Proxies)</title>
+    </head>
+    <body>
+      <h1>JD → Jellyfin</h1>
+      {render_nav("proxies")}
+      {err_html}
+
+      <form method="post" action="/proxies">
+        <div class="row">
+          <label>SOCKS5 (ein Proxy pro Zeile, z. B. IP:PORT)</label><br/>
+          <textarea name="socks5_in" rows="6" style="width:100%; max-width:860px; padding:10px; border:1px solid #ccc; border-radius:8px;">{socks5_in}</textarea>
+        </div>
+
+        <div class="row">
+          <label>SOCKS4 (ein Proxy pro Zeile, z. B. IP:PORT)</label><br/>
+          <textarea name="socks4_in" rows="6" style="width:100%; max-width:860px; padding:10px; border:1px solid #ccc; border-radius:8px;">{socks4_in}</textarea>
+        </div>
+
+        <div class="row">
+          <label>HTTP (ein Proxy pro Zeile, z. B. IP:PORT)</label><br/>
+          <textarea name="http_in" rows="6" style="width:100%; max-width:860px; padding:10px; border:1px solid #ccc; border-radius:8px;">{http_in}</textarea>
+        </div>
+
+        <button type="submit">In JDownloader-Format umwandeln</button>
+      </form>
+
+      <h2 style="margin-top:18px;">JDownloader Import-Liste</h2>
+      <p class="hint">Format: <code>socks5://IP:PORT</code>, <code>socks4://IP:PORT</code>, <code>http://IP:PORT</code>. Keine Prüfung/Validierung.</p>
+
+      <div class="row">
+        <textarea id="out" rows="12" readonly style="width:100%; max-width:860px; padding:10px; border:1px solid #ccc; border-radius:8px;">{out_text}</textarea>
+      </div>
+
+      <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('out').value)">Kopieren</button>
     </body>
     </html>
     """
@@ -830,3 +931,50 @@ def cancel(jobid: str):
         job.cancel_requested = True
         job.message = "Abbruch angefordert…"
     return RedirectResponse(url="/", status_code=303)
+
+@app.get("/proxies", response_class=HTMLResponse)
+def proxies_get():
+    try:
+        socks5_in = fetch_proxy_list("https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt")
+        socks4_in = fetch_proxy_list("https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks4.txt")
+        http_in = fetch_proxy_list("https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt")
+
+        s5 = format_proxy_lines(socks5_in, "socks5")
+        s4 = format_proxy_lines(socks4_in, "socks4")
+        hp = format_proxy_lines(http_in, "http")
+        combined = "\n".join([x for x in [s5, s4, hp] if x.strip()])
+        return HTMLResponse(render_proxies_page(
+            socks5_in=socks5_in,
+            socks4_in=socks4_in,
+            http_in=http_in,
+            out_text=combined
+        ))
+    except Exception as e:
+        return HTMLResponse(render_proxies_page(error=str(e)), status_code=502)
+
+@app.post("/proxies", response_class=HTMLResponse)
+def proxies_post(
+    socks5_in: str = Form(""),
+    socks4_in: str = Form(""),
+    http_in: str = Form(""),
+):
+    try:
+        s5 = format_proxy_lines(socks5_in, "socks5")
+        s4 = format_proxy_lines(socks4_in, "socks4")
+        hp = format_proxy_lines(http_in, "http")
+
+        combined = "\n".join([x for x in [s5, s4, hp] if x.strip()])
+        return HTMLResponse(render_proxies_page(
+            socks5_in=socks5_in,
+            socks4_in=socks4_in,
+            http_in=http_in,
+            out_text=combined
+        ))
+    except Exception as e:
+        return HTMLResponse(render_proxies_page(
+            error=str(e),
+            socks5_in=socks5_in,
+            socks4_in=socks4_in,
+            http_in=http_in,
+            out_text=""
+        ), status_code=400)
