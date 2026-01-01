@@ -26,6 +26,6 @@ services:
     environment:
       TZ: Europe/Berlin
     volumes:
-      - ./data/jd-output:/output:ro
+      - ./data/jd-output:/output:rw
       - ./data/md5:/md5:rw
       - /root/.ssh/id_ed25519:/ssh/id_ed25519:ro
