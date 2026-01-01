@@ -117,6 +117,8 @@ class Job:
     library: str  # movies|series|auto
     status: str   # queued|collecting|downloading|upload|finished|failed
     message: str
+    progress: float = 0.0
+    cancel_requested: bool = False
 
 jobs: Dict[str, Job] = {}
 lock = threading.Lock()
@@ -205,12 +207,24 @@ def md5_file(path: str) -> str:
     return h.hexdigest()
 
 def write_md5_sidecar(file_path: str, md5_hex: str) -> str:
-    os.makedirs(MD5_DIR, exist_ok=True)
     base = os.path.basename(file_path)
-    md5_path = os.path.join(MD5_DIR, base + ".md5")
-    with open(md5_path, "w", encoding="utf-8") as f:
-        f.write(f"{md5_hex}  {base}\n")
-    return md5_path
+    candidates = [MD5_DIR, "/tmp/md5"]
+    last_err: Optional[Exception] = None
+
+    for target in candidates:
+        try:
+            os.makedirs(target, exist_ok=True)
+            md5_path = os.path.join(target, base + ".md5")
+            with open(md5_path, "w", encoding="utf-8") as f:
+                f.write(f"{md5_hex}  {base}\n")
+            return md5_path
+        except PermissionError as exc:
+            last_err = exc
+            continue
+
+    if last_err:
+        raise last_err
+    raise RuntimeError("Failed to write MD5 sidecar file.")
 
 def ffprobe_ok(path: str) -> bool:
     try:
@@ -395,6 +409,10 @@ def query_links_and_packages(dev, jobid: str) -> Tuple[List[Dict[str, Any]], Dic
         "name": True,
         "finished": True,
         "running": True,
+        "bytesLoaded": True,
+        "bytesTotal": True,
+        "bytes": True,
+        "totalBytes": True,
         "status": True,
         "packageUUID": True,
         "uuid": True,
@@ -467,6 +485,86 @@ def try_remove_from_jd(dev, links: List[Dict[str, Any]], pkg_map: Dict[Any, Dict
 
     return "JDownloader-API: Paket/Links konnten nicht entfernt werden (Wrapper-Methoden nicht vorhanden)."
 
+def try_cancel_from_jd(dev, links: List[Dict[str, Any]], pkg_map: Dict[Any, Dict[str, Any]]) -> Optional[str]:
+    link_ids = [l.get("uuid") for l in links if l.get("uuid") is not None]
+    pkg_ids = list(pkg_map.keys())
+
+    candidates = [
+        ("downloads", "removeLinks"),
+        ("downloads", "remove_links"),
+        ("downloads", "deleteLinks"),
+        ("downloads", "delete_links"),
+        ("downloadcontroller", "removeLinks"),
+        ("downloadcontroller", "remove_links"),
+    ]
+
+    payloads = [
+        {"linkUUIDs": link_ids, "packageUUIDs": pkg_ids, "deleteFiles": True},
+        {"linkIds": link_ids, "packageIds": pkg_ids, "deleteFiles": True},
+        {"linkUUIDs": link_ids, "deleteFiles": True},
+        {"packageUUIDs": pkg_ids, "deleteFiles": True},
+        {"linkUUIDs": link_ids, "packageUUIDs": pkg_ids, "removeFiles": True},
+        {"linkIds": link_ids, "packageIds": pkg_ids, "removeFiles": True},
+    ]
+
+    for ns, fn in candidates:
+        obj = getattr(dev, ns, None)
+        if obj is None:
+            continue
+        meth = getattr(obj, fn, None)
+        if meth is None:
+            continue
+        for payload in payloads:
+            try:
+                meth([payload])
+                return None
+            except Exception:
+                continue
+
+    return "JDownloader-API: Abbrechen fehlgeschlagen (Wrapper-Methoden nicht vorhanden)."
+
+def cancel_job(dev, jobid: str) -> Optional[str]:
+    links, pkg_map = query_links_and_packages(dev, jobid)
+    local_paths = local_paths_from_links(links, pkg_map)
+    for path in local_paths:
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except Exception:
+            pass
+        try:
+            sidecar = os.path.join(MD5_DIR, os.path.basename(path) + ".md5")
+            if os.path.isfile(sidecar):
+                os.remove(sidecar)
+        except Exception:
+            pass
+    return try_cancel_from_jd(dev, links, pkg_map)
+
+def calculate_progress(links: List[Dict[str, Any]]) -> float:
+    total = 0
+    loaded = 0
+    for link in links:
+        bytes_total = link.get("bytesTotal")
+        if bytes_total is None:
+            bytes_total = link.get("totalBytes")
+        if bytes_total is None:
+            bytes_total = link.get("bytes")
+        bytes_loaded = link.get("bytesLoaded")
+        if bytes_total is None or bytes_loaded is None:
+            continue
+        try:
+            bytes_total = int(bytes_total)
+            bytes_loaded = int(bytes_loaded)
+        except (TypeError, ValueError):
+            continue
+        if bytes_total <= 0:
+            continue
+        total += bytes_total
+        loaded += min(bytes_loaded, bytes_total)
+    if total <= 0:
+        return 0.0
+    return max(0.0, min(100.0, (loaded / total) * 100.0))
+
 # ============================================================
 # Worker
 # ============================================================
@@ -480,6 +578,13 @@ def worker(jobid: str):
                 job = jobs.get(jobid)
             if not job:
                 return
+            if job.cancel_requested:
+                cancel_msg = cancel_job(dev, jobid)
+                with lock:
+                    job.status = "canceled"
+                    job.message = cancel_msg or "Download abgebrochen und Dateien entfernt."
+                    job.progress = 0.0
+                return
 
             links, pkg_map = query_links_and_packages(dev, jobid)
 
@@ -487,15 +592,18 @@ def worker(jobid: str):
                 with lock:
                     job.status = "collecting"
                     job.message = "Warte auf Link-Crawler…"
+                    job.progress = 0.0
                 time.sleep(POLL_SECONDS)
                 continue
 
             all_finished = all(bool(l.get("finished")) for l in links)
             if not all_finished:
+                progress = calculate_progress(links)
                 with lock:
                     job.status = "downloading"
                     done = sum(1 for l in links if l.get("finished"))
                     job.message = f"Download läuft… ({done}/{len(links)} fertig)"
+                    job.progress = progress
                 time.sleep(POLL_SECONDS)
                 continue
 
@@ -506,6 +614,7 @@ def worker(jobid: str):
                 with lock:
                     job.status = "failed"
                     job.message = "Keine Video-Datei gefunden (Whitelist)."
+                    job.progress = 0.0
                 return
 
             valid_videos = [p for p in video_files if ffprobe_ok(p)]
@@ -513,11 +622,13 @@ def worker(jobid: str):
                 with lock:
                     job.status = "failed"
                     job.message = "ffprobe: keine gültige Video-Datei."
+                    job.progress = 0.0
                 return
 
             with lock:
                 job.status = "upload"
                 job.message = f"Download fertig. MD5/Upload/Verify für {len(valid_videos)} Datei(en)…"
+                job.progress = 100.0
 
             ssh = ssh_connect()
             try:
@@ -557,6 +668,7 @@ def worker(jobid: str):
             with lock:
                 job.status = "finished"
                 job.message = "Upload + MD5 OK. " + (jd_cleanup_msg or "JDownloader: Paket/Links entfernt.")
+                job.progress = 100.0
             return
 
     except Exception as e:
@@ -565,6 +677,7 @@ def worker(jobid: str):
             if job:
                 job.status = "failed"
                 job.message = str(e)
+                job.progress = 0.0
 
 # ============================================================
 # Web
@@ -579,13 +692,27 @@ def render_page(error: str = "") -> str:
         job_list = list(jobs.values())[::-1]
 
     for j in job_list:
+        progress_pct = f"{j.progress:.1f}%"
+        progress_html = (
+            f"<div class='progress-row'>"
+            f"<progress value='{j.progress:.1f}' max='100'></progress>"
+            f"<span class='progress-text'>{progress_pct}</span>"
+            f"</div>"
+        )
+        cancel_html = ""
+        if j.status not in {"finished", "failed", "canceled"}:
+            cancel_html = (
+                f"<form method='post' action='/cancel/{j.id}' class='inline-form'>"
+                f"<button type='submit' class='danger'>Abbrechen</button>"
+                f"</form>"
+            )
         rows += (
             f"<tr>"
             f"<td><code>{j.id}</code></td>"
             f"<td style='max-width:560px; word-break:break-all;'>{j.url}</td>"
             f"<td>{j.package_name}</td>"
             f"<td>{j.library}</td>"
-            f"<td><b>{j.status}</b><br/><small>{j.message}</small></td>"
+            f"<td><b>{j.status}</b><br/><small>{j.message}</small>{progress_html}{cancel_html}</td>"
             f"</tr>"
         )
 
@@ -678,9 +805,22 @@ def submit(url: str = Form(...), package_name: str = Form(""), library: str = Fo
             library=library,
             status="queued",
             message="Download gestartet",
+            progress=0.0,
         )
 
     t = threading.Thread(target=worker, args=(jobid,), daemon=True)
     t.start()
 
+    return RedirectResponse(url="/", status_code=303)
+
+@app.post("/cancel/{jobid}")
+def cancel(jobid: str):
+    with lock:
+        job = jobs.get(jobid)
+        if not job:
+            return RedirectResponse(url="/", status_code=303)
+        if job.status in {"finished", "failed", "canceled"}:
+            return RedirectResponse(url="/", status_code=303)
+        job.cancel_requested = True
+        job.message = "Abbruch angefordert…"
     return RedirectResponse(url="/", status_code=303)
