@@ -56,6 +56,7 @@ POLL_SECONDS = float(os.environ.get("POLL_SECONDS", "5"))
 
 # JDownloader writes here inside container
 JD_OUTPUT_PATH = "/output"
+PROXY_EXPORT_PATH = os.environ.get("PROXY_EXPORT_PATH", "/output/jd-proxies.jdproxies")
 
 URL_RE = re.compile(r"^https?://", re.I)
 
@@ -364,6 +365,96 @@ def fetch_proxy_list(url: str) -> str:
     req = urllib.request.Request(url)
     with urllib.request.urlopen(req, timeout=20) as resp:
         return resp.read().decode("utf-8", "replace")
+
+def build_jdproxies_payload(text: str) -> Dict[str, Any]:
+    if not text.strip():
+        raise ValueError("Keine Proxy-Einträge zum Speichern.")
+    blacklist_filter = {
+        "entries": [
+            "# Dies ist ein Kommentar",
+            "// Dies ist auch ein Kommentar",
+            "# Für jdownloader.org auskommentieren",
+            "# jdownloader.org",
+            "# unten für alle Accounts mit der ID 'test *' @ jdownloader.org auskommentieren",
+            "#test@jdownloader.org",
+            "# Kommentar unten für ein Konto mit der ID 'test' @ jdownloader.org",
+            "#test$@jdownloader.org",
+            "# Sie können Muster für Konto-ID und Host verwenden, z. B. accountPattern @ hostPattern",
+            "",
+            "my.jdownloader.org",
+            "",
+            "api.jdownloader.org",
+            "",
+            "*.jdownloader.org",
+        ],
+        "type": "BLACKLIST",
+    }
+    entries: List[Dict[str, Any]] = []
+    type_map = {
+        "socks5": "SOCKS5",
+        "socks4": "SOCKS4",
+        "http": "HTTP",
+    }
+    entries.append({
+        "filter": None,
+        "proxy": {
+            "address": None,
+            "password": None,
+            "port": 80,
+            "type": "NONE",
+            "username": None,
+            "connectMethodPrefered": False,
+            "preferNativeImplementation": False,
+            "resolveHostName": False,
+        },
+        "enabled": True,
+        "pac": False,
+        "rangeRequestsSupported": True,
+        "reconnectSupported": True,
+    })
+    for line in text.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        parsed = urllib.parse.urlparse(s)
+        if not parsed.scheme or not parsed.hostname or parsed.port is None:
+            continue
+        proxy_type = type_map.get(parsed.scheme.lower())
+        if not proxy_type:
+            continue
+        entries.append({
+            "filter": blacklist_filter,
+            "proxy": {
+                "address": parsed.hostname,
+                "password": None,
+                "port": int(parsed.port),
+                "type": proxy_type,
+                "username": None,
+                "connectMethodPrefered": False,
+                "preferNativeImplementation": False,
+                "resolveHostName": False,
+            },
+            "enabled": True,
+            "pac": False,
+            "rangeRequestsSupported": True,
+            "reconnectSupported": False,
+        })
+    if not entries:
+        raise ValueError("Keine gültigen Proxy-Einträge gefunden.")
+    return {"customProxyList": entries}
+
+def save_proxy_export(text: str) -> str:
+    payload = build_jdproxies_payload(text)
+    export_path = PROXY_EXPORT_PATH
+    export_dir = os.path.dirname(export_path)
+    if export_dir:
+        os.makedirs(export_dir, exist_ok=True)
+    if os.path.exists(export_path):
+        os.remove(export_path)
+    with open(export_path, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2))
+        handle.write("\n")
+    return export_path
 
 def pick_library_target(library_choice: str, filename: str, package_name: str) -> str:
     if library_choice not in {"movies", "series", "auto"}:
@@ -730,7 +821,11 @@ def worker(jobid: str):
 def favicon():
     return HTMLResponse(status_code=204)
 
-def render_page(error: str = "") -> str:
+@app.get("/jobs", response_class=HTMLResponse)
+def jobs_get():
+    return HTMLResponse(render_job_rows())
+
+def render_job_rows() -> str:
     rows = ""
     with lock:
         job_list = list(jobs.values())[::-1]
@@ -760,6 +855,13 @@ def render_page(error: str = "") -> str:
             f"</tr>"
         )
 
+    if not rows:
+        rows = "<tr><td colspan='5'><em>No jobs yet.</em></td></tr>"
+    return rows
+
+def render_page(error: str = "") -> str:
+    rows = render_job_rows()
+
     err_html = f"<p class='error'>{error}</p>" if error else ""
     auth_note = "aktiv" if _auth_enabled() else "aus"
     return f"""
@@ -769,10 +871,18 @@ def render_page(error: str = "") -> str:
       <meta charset="utf-8">
       <title>JD → Jellyfin</title>
       <script>
-        setInterval(() => {{
+        async function refreshJobs() {{
           if (document.hidden) return;
-          window.location.reload();
-        }}, 5000);
+          try {{
+            const resp = await fetch('/jobs');
+            if (!resp.ok) return;
+            const html = await resp.text();
+            const tbody = document.getElementById('jobs-body');
+            if (tbody) tbody.innerHTML = html;
+          }} catch (e) {{
+          }}
+        }}
+        setInterval(refreshJobs, 5000);
       </script>
     </head>
     <body>
@@ -810,8 +920,8 @@ def render_page(error: str = "") -> str:
         <thead>
           <tr><th>JobID</th><th>URL</th><th>Paket</th><th>Ziel</th><th>Status</th></tr>
         </thead>
-        <tbody>
-          {rows if rows else "<tr><td colspan='5'><em>No jobs yet.</em></td></tr>"}
+        <tbody id="jobs-body">
+          {rows}
         </tbody>
       </table>
     </body>
@@ -829,8 +939,17 @@ def render_nav(active: str) -> str:
         + "</div>"
     )
 
-def render_proxies_page(error: str = "", socks5_in: str = "", socks4_in: str = "", http_in: str = "", out_text: str = "") -> str:
+def render_proxies_page(
+    error: str = "",
+    message: str = "",
+    socks5_in: str = "",
+    socks4_in: str = "",
+    http_in: str = "",
+    out_text: str = "",
+    export_path: str = "",
+) -> str:
     err_html = f"<p class='error'>{error}</p>" if error else ""
+    msg_html = f"<p class='success'>{message}</p>" if message else ""
     return f"""
     <html>
     <head>
@@ -842,6 +961,7 @@ def render_proxies_page(error: str = "", socks5_in: str = "", socks4_in: str = "
       <h1>JD → Jellyfin</h1>
       {render_nav("proxies")}
       {err_html}
+      {msg_html}
 
       <form method="post" action="/proxies">
         <div class="row">
@@ -870,6 +990,18 @@ def render_proxies_page(error: str = "", socks5_in: str = "", socks4_in: str = "
       </div>
 
       <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('out').value)">Kopieren</button>
+
+      <h2 style="margin-top:18px;">Datei für Connection Manager</h2>
+      <p class="hint">Speichert die Liste als <code>.jdproxies</code> im Container, z. B. zum Import in JDownloader → Verbindungsmanager → Importieren.</p>
+
+      <form method="post" action="/proxies/save">
+        <textarea name="socks5_in" style="display:none;">{socks5_in}</textarea>
+        <textarea name="socks4_in" style="display:none;">{socks4_in}</textarea>
+        <textarea name="http_in" style="display:none;">{http_in}</textarea>
+        <button type="submit">Liste als JDProxies speichern</button>
+      </form>
+
+      <p class="hint">Aktueller Pfad: <code>{export_path or PROXY_EXPORT_PATH}</code></p>
     </body>
     </html>
     """
@@ -947,7 +1079,8 @@ def proxies_get():
             socks5_in=socks5_in,
             socks4_in=socks4_in,
             http_in=http_in,
-            out_text=combined
+            out_text=combined,
+            export_path=PROXY_EXPORT_PATH,
         ))
     except Exception as e:
         return HTMLResponse(render_proxies_page(error=str(e)), status_code=502)
@@ -968,7 +1101,8 @@ def proxies_post(
             socks5_in=socks5_in,
             socks4_in=socks4_in,
             http_in=http_in,
-            out_text=combined
+            out_text=combined,
+            export_path=PROXY_EXPORT_PATH,
         ))
     except Exception as e:
         return HTMLResponse(render_proxies_page(
@@ -976,5 +1110,36 @@ def proxies_post(
             socks5_in=socks5_in,
             socks4_in=socks4_in,
             http_in=http_in,
-            out_text=""
+            out_text="",
+            export_path=PROXY_EXPORT_PATH,
+        ), status_code=400)
+
+@app.post("/proxies/save", response_class=HTMLResponse)
+def proxies_save(
+    socks5_in: str = Form(""),
+    socks4_in: str = Form(""),
+    http_in: str = Form(""),
+):
+    try:
+        s5 = format_proxy_lines(socks5_in, "socks5")
+        s4 = format_proxy_lines(socks4_in, "socks4")
+        hp = format_proxy_lines(http_in, "http")
+        combined = "\n".join([x for x in [s5, s4, hp] if x.strip()])
+        export_path = save_proxy_export(combined)
+        return HTMLResponse(render_proxies_page(
+            message=f"Proxy-Liste gespeichert: {export_path}",
+            socks5_in=socks5_in,
+            socks4_in=socks4_in,
+            http_in=http_in,
+            out_text=combined,
+            export_path=export_path,
+        ))
+    except Exception as e:
+        return HTMLResponse(render_proxies_page(
+            error=str(e),
+            socks5_in=socks5_in,
+            socks4_in=socks4_in,
+            http_in=http_in,
+            out_text="",
+            export_path=PROXY_EXPORT_PATH,
         ), status_code=400)
