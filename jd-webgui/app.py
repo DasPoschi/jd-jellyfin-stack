@@ -412,6 +412,7 @@ def build_jdproxies_payload(text: str) -> Dict[str, Any]:
             "*.jdownloader.org",
             "",
             "*.your-server.de",
+            "88.99.115.46",
         ],
         "type": "BLACKLIST",
     }
