@@ -60,6 +60,8 @@ PROXY_EXPORT_PATH = os.environ.get("PROXY_EXPORT_PATH", "/output/jd-proxies.jdpr
 
 URL_RE = re.compile(r"^https?://", re.I)
 
+NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 VIDEO_EXTS = {
     ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".flv", ".webm",
     ".ts", ".m2ts", ".mts", ".mpg", ".mpeg", ".vob", ".ogv",
@@ -290,7 +292,7 @@ def remote_md5sum(ssh: paramiko.SSHClient, remote_path: str) -> str:
 # ============================================================
 def _http_get_json(url: str, headers: Optional[Dict[str, str]] = None) -> Any:
     req = urllib.request.Request(url, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=20) as r:
+    with NO_PROXY_OPENER.open(req, timeout=20) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
 def tmdb_search_movie(query: str) -> Optional[Dict[str, Any]]:
@@ -363,7 +365,7 @@ def format_proxy_lines(raw: str, scheme: str) -> str:
 
 def fetch_proxy_list(url: str) -> str:
     req = urllib.request.Request(url)
-    with urllib.request.urlopen(req, timeout=20) as resp:
+    with NO_PROXY_OPENER.open(req, timeout=20) as resp:
         return resp.read().decode("utf-8", "replace")
 
 def build_jdproxies_payload(text: str) -> Dict[str, Any]:
@@ -527,7 +529,7 @@ def jellyfin_refresh_library():
         try:
             url = JELLYFIN_API_BASE + path
             req = urllib.request.Request(url, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=20) as r:
+            with NO_PROXY_OPENER.open(req, timeout=20) as r:
                 _ = r.read()
             return
         except Exception:
