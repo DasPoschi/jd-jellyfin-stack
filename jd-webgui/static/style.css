@@ -19,3 +19,4 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 .progress-row { display:flex; align-items:center; gap:8px; margin-top:6px; }
 .progress-text { font-size:12px; color:#333; min-width:48px; }
 .inline-form { margin-top:6px; }
+.log-area { width:100%; max-width: 920px; padding:10px; border:1px solid #ccc; border-radius:8px; background:#fff; }

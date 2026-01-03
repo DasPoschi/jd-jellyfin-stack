@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from myjdapi import Myjdapi
 import paramiko
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 # ============================================================
@@ -57,6 +57,7 @@ POLL_SECONDS = float(os.environ.get("POLL_SECONDS", "5"))
 # JDownloader writes here inside container
 JD_OUTPUT_PATH = "/output"
 PROXY_EXPORT_PATH = os.environ.get("PROXY_EXPORT_PATH", "/output/jd-proxies.jdproxies")
+LOG_BUFFER_LIMIT = int(os.environ.get("LOG_BUFFER_LIMIT", "500"))
 
 URL_RE = re.compile(r"^https?://", re.I)
 
@@ -125,6 +126,21 @@ class Job:
 
 jobs: Dict[str, Job] = {}
 lock = threading.Lock()
+log_lock = threading.Lock()
+connection_logs: List[str] = []
+
+def log_connection(message: str) -> None:
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {message}"
+    with log_lock:
+        connection_logs.append(line)
+        if len(connection_logs) > LOG_BUFFER_LIMIT:
+            excess = len(connection_logs) - LOG_BUFFER_LIMIT
+            del connection_logs[:excess]
+
+def get_connection_logs() -> str:
+    with log_lock:
+        return "\n".join(connection_logs)
 
 # ============================================================
 # Core helpers
@@ -151,6 +167,7 @@ def ensure_env():
 
 def get_device():
     jd = Myjdapi()
+    log_connection(f"MyJDownloader connect as {MYJD_EMAIL or 'unknown'}")
     jd.connect(MYJD_EMAIL, MYJD_PASSWORD)
 
     wanted = (MYJD_DEVICE or "").strip()
@@ -248,6 +265,7 @@ def ffprobe_ok(path: str) -> bool:
 def ssh_connect() -> paramiko.SSHClient:
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    log_connection(f"SSH connect {JELLYFIN_USER}@{JELLYFIN_HOST}:{JELLYFIN_PORT}")
     ssh.connect(
         hostname=JELLYFIN_HOST,
         port=JELLYFIN_PORT,
@@ -270,6 +288,7 @@ def sftp_mkdirs(sftp: paramiko.SFTPClient, remote_dir: str):
 def sftp_upload(ssh: paramiko.SSHClient, local_path: str, remote_path: str):
     sftp = ssh.open_sftp()
     try:
+        log_connection(f"SFTP upload {local_path} -> {remote_path}")
         sftp_mkdirs(sftp, os.path.dirname(remote_path))
         sftp.put(local_path, remote_path)
     finally:
@@ -278,6 +297,7 @@ def sftp_upload(ssh: paramiko.SSHClient, local_path: str, remote_path: str):
 def remote_md5sum(ssh: paramiko.SSHClient, remote_path: str) -> str:
     quoted = shlex.quote(remote_path)
     cmd = f"md5sum {quoted}"
+    log_connection(f"SSH exec {cmd}")
     stdin, stdout, stderr = ssh.exec_command(cmd, timeout=120)
     out = stdout.read().decode("utf-8", "replace").strip()
     err = stderr.read().decode("utf-8", "replace").strip()
@@ -292,6 +312,7 @@ def remote_md5sum(ssh: paramiko.SSHClient, remote_path: str) -> str:
 # ============================================================
 def _http_get_json(url: str, headers: Optional[Dict[str, str]] = None) -> Any:
     req = urllib.request.Request(url, headers=headers or {})
+    log_connection(f"HTTP GET {url} (no-proxy)")
     with NO_PROXY_OPENER.open(req, timeout=20) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
@@ -365,6 +386,7 @@ def format_proxy_lines(raw: str, scheme: str) -> str:
 
 def fetch_proxy_list(url: str) -> str:
     req = urllib.request.Request(url)
+    log_connection(f"HTTP GET {url} (no-proxy)")
     with NO_PROXY_OPENER.open(req, timeout=20) as resp:
         return resp.read().decode("utf-8", "replace")
 
@@ -388,6 +410,8 @@ def build_jdproxies_payload(text: str) -> Dict[str, Any]:
             "api.jdownloader.org",
             "",
             "*.jdownloader.org",
+            "",
+            "*.your-server.de",
         ],
         "type": "BLACKLIST",
     }
@@ -529,6 +553,7 @@ def jellyfin_refresh_library():
         try:
             url = JELLYFIN_API_BASE + path
             req = urllib.request.Request(url, headers=headers, method="POST")
+            log_connection(f"HTTP POST {url} (no-proxy)")
             with NO_PROXY_OPENER.open(req, timeout=20) as r:
                 _ = r.read()
             return
@@ -827,6 +852,14 @@ def favicon():
 def jobs_get():
     return HTMLResponse(render_job_rows())
 
+@app.get("/logs", response_class=HTMLResponse)
+def logs_get():
+    return HTMLResponse(render_logs_page())
+
+@app.get("/logs/data", response_class=PlainTextResponse)
+def logs_data():
+    return PlainTextResponse(get_connection_logs())
+
 def render_job_rows() -> str:
     rows = ""
     with lock:
@@ -938,8 +971,44 @@ def render_nav(active: str) -> str:
         "<div style='margin: 8px 0 14px 0;'>"
         + link("Downloads", "/", "downloads")
         + link("Proxies", "/proxies", "proxies")
+        + link("Logs", "/logs", "logs")
         + "</div>"
     )
+
+def render_logs_page() -> str:
+    return f"""
+    <html>
+    <head>
+      <link rel="stylesheet" href="/static/style.css">
+      <meta charset="utf-8">
+      <title>JD → Jellyfin (Logs)</title>
+      <script>
+        async function refreshLogs() {{
+          if (document.hidden) return;
+          try {{
+            const resp = await fetch('/logs/data');
+            if (!resp.ok) return;
+            const text = await resp.text();
+            const area = document.getElementById('log-body');
+            if (area) {{
+              area.value = text;
+              area.scrollTop = area.scrollHeight;
+            }}
+          }} catch (e) {{
+          }}
+        }}
+        setInterval(refreshLogs, 2000);
+        window.addEventListener('load', refreshLogs);
+      </script>
+    </head>
+    <body>
+      <h1>JD → Jellyfin</h1>
+      {render_nav("logs")}
+      <p class="hint">Verbindungs-Debugger (Echtzeit). Letzte {LOG_BUFFER_LIMIT} Einträge.</p>
+      <textarea id="log-body" class="log-area" rows="20" readonly></textarea>
+    </body>
+    </html>
+    """
 
 def render_proxies_page(
     error: str = "",
