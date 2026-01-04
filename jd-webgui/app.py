@@ -388,7 +388,10 @@ def fetch_proxy_list(url: str) -> str:
     req = urllib.request.Request(url)
     log_connection(f"HTTP GET {url} (no-proxy)")
     with NO_PROXY_OPENER.open(req, timeout=20) as resp:
-        return resp.read().decode("utf-8", "replace")
+        text = resp.read().decode("utf-8", "replace")
+    if "\n" not in text and re.search(r"\s", text):
+        return re.sub(r"\s+", "\n", text.strip())
+    return text
 
 def build_jdproxies_payload(text: str) -> Dict[str, Any]:
     if not text.strip():
@@ -1139,8 +1142,12 @@ def cancel(jobid: str):
 @app.get("/proxies", response_class=HTMLResponse)
 def proxies_get():
     try:
-        socks5_in = fetch_proxy_list("https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt")
-        socks4_in = fetch_proxy_list("https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks4.txt")
+        socks5_in = fetch_proxy_list(
+            "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol=socks5&timeout=10000&country=all&ssl=yes&anonymity=elite&skip=0&limit=2000"
+        )
+        socks4_in = fetch_proxy_list(
+            "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol=socks4&timeout=10000&country=all&ssl=yes&anonymity=elite&skip=0&limit=2000"
+        )
         http_in = fetch_proxy_list("https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt")
 
         s5 = format_proxy_lines(socks5_in, "socks5")
