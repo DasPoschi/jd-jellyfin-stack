@@ -1141,6 +1141,7 @@ def proxies_get():
         socks4_in = fetch_proxy_list(
             "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol=socks4&timeout=10000&country=all&ssl=yes&anonymity=elite&skip=0&limit=2000"
         )
+        http_in = fetch_proxy_list("https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt")
 
         s5 = format_proxy_lines(socks5_in, "socks5")
         s4 = format_proxy_lines(socks4_in, "socks4")
