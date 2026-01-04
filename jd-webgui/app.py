@@ -396,29 +396,6 @@ def fetch_proxy_list(url: str) -> str:
 def build_jdproxies_payload(text: str) -> Dict[str, Any]:
     if not text.strip():
         raise ValueError("Keine Proxy-Einträge zum Speichern.")
-    blacklist_filter = {
-        "entries": [
-            "# Dies ist ein Kommentar",
-            "// Dies ist auch ein Kommentar",
-            "# Für jdownloader.org auskommentieren",
-            "# jdownloader.org",
-            "# unten für alle Accounts mit der ID 'test *' @ jdownloader.org auskommentieren",
-            "#test@jdownloader.org",
-            "# Kommentar unten für ein Konto mit der ID 'test' @ jdownloader.org",
-            "#test$@jdownloader.org",
-            "# Sie können Muster für Konto-ID und Host verwenden, z. B. accountPattern @ hostPattern",
-            "",
-            "my.jdownloader.org",
-            "",
-            "api.jdownloader.org",
-            "",
-            "*.jdownloader.org",
-            "",
-            "*.your-server.de",
-            "88.99.115.46",
-        ],
-        "type": "BLACKLIST",
-    }
     entries: List[Dict[str, Any]] = []
     type_map = {
         "socks5": "SOCKS5",
@@ -453,7 +430,7 @@ def build_jdproxies_payload(text: str) -> Dict[str, Any]:
         if not proxy_type:
             continue
         entries.append({
-            "filter": blacklist_filter,
+            "filter": None,
             "proxy": {
                 "address": parsed.hostname,
                 "password": None,
