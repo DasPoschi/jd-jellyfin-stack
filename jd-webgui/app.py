@@ -388,7 +388,10 @@ def fetch_proxy_list(url: str) -> str:
     req = urllib.request.Request(url)
     log_connection(f"HTTP GET {url} (no-proxy)")
     with NO_PROXY_OPENER.open(req, timeout=20) as resp:
-        return resp.read().decode("utf-8", "replace")
+        text = resp.read().decode("utf-8", "replace")
+    if "\n" not in text and re.search(r"\s", text):
+        return re.sub(r"\s+", "\n", text.strip())
+    return text
 
 def build_jdproxies_payload(text: str) -> Dict[str, Any]:
     if not text.strip():
@@ -1016,7 +1019,6 @@ def render_proxies_page(
     message: str = "",
     socks5_in: str = "",
     socks4_in: str = "",
-    http_in: str = "",
     out_text: str = "",
     export_path: str = "",
 ) -> str:
@@ -1046,16 +1048,11 @@ def render_proxies_page(
           <textarea name="socks4_in" rows="6" style="width:100%; max-width:860px; padding:10px; border:1px solid #ccc; border-radius:8px;">{socks4_in}</textarea>
         </div>
 
-        <div class="row">
-          <label>HTTP (ein Proxy pro Zeile, z. B. IP:PORT)</label><br/>
-          <textarea name="http_in" rows="6" style="width:100%; max-width:860px; padding:10px; border:1px solid #ccc; border-radius:8px;">{http_in}</textarea>
-        </div>
-
         <button type="submit">In JDownloader-Format umwandeln</button>
       </form>
 
       <h2 style="margin-top:18px;">JDownloader Import-Liste</h2>
-      <p class="hint">Format: <code>socks5://IP:PORT</code>, <code>socks4://IP:PORT</code>, <code>http://IP:PORT</code>. Keine Prüfung/Validierung.</p>
+      <p class="hint">Format: <code>socks5://IP:PORT</code>, <code>socks4://IP:PORT</code>. Keine Prüfung/Validierung.</p>
 
       <div class="row">
         <textarea id="out" rows="12" readonly style="width:100%; max-width:860px; padding:10px; border:1px solid #ccc; border-radius:8px;">{out_text}</textarea>
@@ -1069,7 +1066,6 @@ def render_proxies_page(
       <form method="post" action="/proxies/save">
         <textarea name="socks5_in" style="display:none;">{socks5_in}</textarea>
         <textarea name="socks4_in" style="display:none;">{socks4_in}</textarea>
-        <textarea name="http_in" style="display:none;">{http_in}</textarea>
         <button type="submit">Liste als JDProxies speichern</button>
       </form>
 
@@ -1139,18 +1135,19 @@ def cancel(jobid: str):
 @app.get("/proxies", response_class=HTMLResponse)
 def proxies_get():
     try:
-        socks5_in = fetch_proxy_list("https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt")
-        socks4_in = fetch_proxy_list("https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks4.txt")
-        http_in = fetch_proxy_list("https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt")
+        socks5_in = fetch_proxy_list(
+            "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol=socks5&timeout=10000&country=all&ssl=yes&anonymity=elite&skip=0&limit=2000"
+        )
+        socks4_in = fetch_proxy_list(
+            "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol=socks4&timeout=10000&country=all&ssl=yes&anonymity=elite&skip=0&limit=2000"
+        )
 
         s5 = format_proxy_lines(socks5_in, "socks5")
         s4 = format_proxy_lines(socks4_in, "socks4")
-        hp = format_proxy_lines(http_in, "http")
-        combined = "\n".join([x for x in [s5, s4, hp] if x.strip()])
+        combined = "\n".join([x for x in [s5, s4] if x.strip()])
         return HTMLResponse(render_proxies_page(
             socks5_in=socks5_in,
             socks4_in=socks4_in,
-            http_in=http_in,
             out_text=combined,
             export_path=PROXY_EXPORT_PATH,
         ))
@@ -1161,18 +1158,15 @@ def proxies_get():
 def proxies_post(
     socks5_in: str = Form(""),
     socks4_in: str = Form(""),
-    http_in: str = Form(""),
 ):
     try:
         s5 = format_proxy_lines(socks5_in, "socks5")
         s4 = format_proxy_lines(socks4_in, "socks4")
-        hp = format_proxy_lines(http_in, "http")
 
-        combined = "\n".join([x for x in [s5, s4, hp] if x.strip()])
+        combined = "\n".join([x for x in [s5, s4] if x.strip()])
         return HTMLResponse(render_proxies_page(
             socks5_in=socks5_in,
             socks4_in=socks4_in,
-            http_in=http_in,
             out_text=combined,
             export_path=PROXY_EXPORT_PATH,
         ))
@@ -1181,7 +1175,6 @@ def proxies_post(
             error=str(e),
             socks5_in=socks5_in,
             socks4_in=socks4_in,
-            http_in=http_in,
             out_text="",
             export_path=PROXY_EXPORT_PATH,
         ), status_code=400)
@@ -1190,19 +1183,16 @@ def proxies_post(
 def proxies_save(
     socks5_in: str = Form(""),
     socks4_in: str = Form(""),
-    http_in: str = Form(""),
 ):
     try:
         s5 = format_proxy_lines(socks5_in, "socks5")
         s4 = format_proxy_lines(socks4_in, "socks4")
-        hp = format_proxy_lines(http_in, "http")
-        combined = "\n".join([x for x in [s5, s4, hp] if x.strip()])
+        combined = "\n".join([x for x in [s5, s4] if x.strip()])
         export_path = save_proxy_export(combined)
         return HTMLResponse(render_proxies_page(
             message=f"Proxy-Liste gespeichert: {export_path}",
             socks5_in=socks5_in,
             socks4_in=socks4_in,
-            http_in=http_in,
             out_text=combined,
             export_path=export_path,
         ))
@@ -1211,7 +1201,6 @@ def proxies_save(
             error=str(e),
             socks5_in=socks5_in,
             socks4_in=socks4_in,
-            http_in=http_in,
             out_text="",
             export_path=PROXY_EXPORT_PATH,
         ), status_code=400)
