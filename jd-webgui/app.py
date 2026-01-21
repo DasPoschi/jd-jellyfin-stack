@@ -780,6 +780,16 @@ def worker(jobid: str):
                 time.sleep(POLL_SECONDS)
                 continue
 
+            all_demo = all(is_demo_link(l.get("name", "")) for l in links)
+            if all_demo and not is_demo_link(job.url):
+                cancel_msg = cancel_job(dev, jobid)
+                with lock:
+                    job.status = "failed"
+                    base_msg = "JDownloader lieferte das Demo-Video Big Buck Bunny statt des gewünschten Links."
+                    job.message = f"{base_msg} {cancel_msg}" if cancel_msg else base_msg
+                    job.progress = 0.0
+                return
+
             all_finished = all(bool(l.get("finished")) for l in links)
             if not all_finished:
                 progress = calculate_progress(links)
