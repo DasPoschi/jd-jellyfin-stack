@@ -592,6 +592,37 @@ def local_paths_from_links(links: List[Dict[str, Any]], pkg_map: Dict[Any, Dict[
             out.append(p)
     return out
 
+def is_demo_link(name: str) -> bool:
+    if not name:
+        return False
+    normalized = name.lower().replace(" ", "_")
+    return "big_buck_bunny" in normalized
+
+def call_raw_jd_api(dev, endpoints: List[str], payloads: List[Dict[str, Any]]) -> bool:
+    method_candidates = ["action", "call", "api", "request"]
+    for method_name in method_candidates:
+        method = getattr(dev, method_name, None)
+        if method is None:
+            continue
+        for endpoint in endpoints:
+            for payload in payloads:
+                try:
+                    method(endpoint, payload)
+                    return True
+                except TypeError:
+                    try:
+                        method(endpoint, params=payload)
+                        return True
+                    except TypeError:
+                        try:
+                            method(endpoint, data=payload)
+                            return True
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+    return False
+
 def try_remove_from_jd(dev, links: List[Dict[str, Any]], pkg_map: Dict[Any, Dict[str, Any]]) -> Optional[str]:
     link_ids = [l.get("uuid") for l in links if l.get("uuid") is not None]
     pkg_ids = list(pkg_map.keys())
@@ -625,6 +656,14 @@ def try_remove_from_jd(dev, links: List[Dict[str, Any]], pkg_map: Dict[Any, Dict
                 return None
             except Exception:
                 continue
+
+    endpoint_candidates = [
+        "downloads/removeLinks",
+        "downloadsV2/removeLinks",
+        "downloadcontroller/removeLinks",
+    ]
+    if call_raw_jd_api(dev, endpoint_candidates, payloads):
+        return None
 
     return "JDownloader-API: Paket/Links konnten nicht entfernt werden (Wrapper-Methoden nicht vorhanden)."
 
@@ -663,6 +702,14 @@ def try_cancel_from_jd(dev, links: List[Dict[str, Any]], pkg_map: Dict[Any, Dict
                 return None
             except Exception:
                 continue
+
+    endpoint_candidates = [
+        "downloads/removeLinks",
+        "downloadsV2/removeLinks",
+        "downloadcontroller/removeLinks",
+    ]
+    if call_raw_jd_api(dev, endpoint_candidates, payloads):
+        return None
 
     return "JDownloader-API: Abbrechen fehlgeschlagen (Wrapper-Methoden nicht vorhanden)."
 
@@ -738,6 +785,16 @@ def worker(jobid: str):
                     job.progress = 0.0
                 time.sleep(POLL_SECONDS)
                 continue
+
+            all_demo = all(is_demo_link(l.get("name", "")) for l in links)
+            if all_demo and not is_demo_link(job.url):
+                cancel_msg = cancel_job(dev, jobid)
+                with lock:
+                    job.status = "failed"
+                    base_msg = "JDownloader lieferte das Demo-Video Big Buck Bunny statt des gewünschten Links."
+                    job.message = f"{base_msg} {cancel_msg}" if cancel_msg else base_msg
+                    job.progress = 0.0
+                return
 
             all_finished = all(bool(l.get("finished")) for l in links)
             if not all_finished:
