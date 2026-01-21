@@ -592,12 +592,6 @@ def local_paths_from_links(links: List[Dict[str, Any]], pkg_map: Dict[Any, Dict[
             out.append(p)
     return out
 
-def is_demo_link(name: str) -> bool:
-    if not name:
-        return False
-    normalized = name.lower().replace(" ", "_")
-    return "big_buck_bunny" in normalized
-
 def call_raw_jd_api(dev, endpoints: List[str], payloads: List[Dict[str, Any]]) -> bool:
     method_candidates = ["action", "call", "api", "request"]
     for method_name in method_candidates:
