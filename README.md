@@ -11,7 +11,7 @@ Web GUI to:
 
 ## Files
 - `docker-compose.yml` – stack
-- `.env.example` – copy to `.env` and fill values
+- `.env.example` – copy to `.env` and fill in your values (**never commit `.env`!**)
 - `jd-webgui/app.py` – FastAPI web app
 - `jd-webgui/Dockerfile` – includes ffprobe
 
@@ -39,6 +39,16 @@ docker compose up -d --build
 - JDownloader must be logged into MyJDownloader and appear as an online device.
 - If `MYJD_DEVICE` is empty, the WebGUI will automatically pick the first available device.
 - Ensure the SSH user can write to `/jellyfin/Filme` (and series dir if used).
+
+## Security
+- **Never commit `.env`** – it contains passwords and API keys. Only `.env.example` is tracked.
+- **SSH host key verification**: For secure SFTP transfers, provide a `known_hosts` file:
+  ```bash
+  ssh-keyscan -p 22 192.168.1.1 > known_hosts
+  ```
+  Mount it in `docker-compose.yml` and set `SSH_KNOWN_HOSTS=/ssh/known_hosts`.
+  Without it, any host key is accepted (MITM risk on untrusted networks).
+- **Basic Auth** protects the WebGUI but transmits credentials in cleartext over HTTP. Use a reverse proxy with HTTPS (e.g. Traefik, Caddy) in production.
 
 ## Troubleshooting
 - Device not found: list devices

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html as html_mod
 import json
 import os
 import re
@@ -62,6 +63,16 @@ LOG_BUFFER_LIMIT = int(os.environ.get("LOG_BUFFER_LIMIT", "500"))
 URL_RE = re.compile(r"^https?://", re.I)
 
 NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+def esc(s: str) -> str:
+    """HTML-escape a string to prevent XSS."""
+    return html_mod.escape(str(s), quote=True)
+
+def mask_secret(value: str, visible: int = 4) -> str:
+    """Mask a secret string, showing only the last `visible` characters."""
+    if len(value) <= visible:
+        return "***"
+    return "***" + value[-visible:]
 
 VIDEO_EXTS = {
     ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".flv", ".webm",
@@ -219,6 +230,29 @@ def is_video_file(path: str) -> bool:
         return False
     return ext in VIDEO_EXTS
 
+DEMO_PATTERNS = {"big_buck_bunny", "bigbuckbunny", "big buck bunny", "bbb_sunflower"}
+
+def is_demo_link(name: str) -> bool:
+    """Detect JDownloader demo/fallback videos (e.g. Big Buck Bunny)."""
+    lower = name.lower().replace("-", "_").replace(".", " ")
+    return any(pat in lower for pat in DEMO_PATTERNS)
+
+def check_url_reachable(url: str) -> Optional[str]:
+    """Try a HEAD request to verify the URL is reachable. Returns error string or None."""
+    try:
+        req = urllib.request.Request(url, method="HEAD")
+        req.add_header("User-Agent", "Mozilla/5.0")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status >= 400:
+                return f"URL antwortet mit HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        return f"URL nicht erreichbar: HTTP {e.code}"
+    except urllib.error.URLError as e:
+        return f"URL nicht erreichbar: {e.reason}"
+    except Exception as e:
+        return f"URL-Check fehlgeschlagen: {e}"
+    return None
+
 def md5_file(path: str) -> str:
     h = hashlib.md5()
     with open(path, "rb") as f:
@@ -262,10 +296,17 @@ def ffprobe_ok(path: str) -> bool:
 # ============================================================
 # SSH/SFTP
 # ============================================================
+SSH_KNOWN_HOSTS = os.environ.get("SSH_KNOWN_HOSTS", "/ssh/known_hosts")
+
 def ssh_connect() -> paramiko.SSHClient:
     ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    log_connection(f"SSH connect {JELLYFIN_USER}@{JELLYFIN_HOST}:{JELLYFIN_PORT}")
+    if os.path.isfile(SSH_KNOWN_HOSTS):
+        ssh.load_host_keys(SSH_KNOWN_HOSTS)
+        ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
+        log_connection(f"SSH connect {JELLYFIN_USER}@{JELLYFIN_HOST}:{JELLYFIN_PORT} (known_hosts verified)")
+    else:
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        log_connection(f"SSH connect {JELLYFIN_USER}@{JELLYFIN_HOST}:{JELLYFIN_PORT} (WARNING: no known_hosts, accepting any host key)")
     ssh.connect(
         hostname=JELLYFIN_HOST,
         port=JELLYFIN_PORT,
@@ -310,9 +351,19 @@ def remote_md5sum(ssh: paramiko.SSHClient, remote_path: str) -> str:
 # ============================================================
 # TMDB & naming
 # ============================================================
+def _sanitize_url_for_log(url: str) -> str:
+    """Remove sensitive query params (api_key) from URLs before logging."""
+    parsed = urllib.parse.urlparse(url)
+    params = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+    for key in ("api_key", "apikey", "token"):
+        if key in params:
+            params[key] = ["***"]
+    safe_query = urllib.parse.urlencode(params, doseq=True)
+    return urllib.parse.urlunparse(parsed._replace(query=safe_query))
+
 def _http_get_json(url: str, headers: Optional[Dict[str, str]] = None) -> Any:
     req = urllib.request.Request(url, headers=headers or {})
-    log_connection(f"HTTP GET {url} (no-proxy)")
+    log_connection(f"HTTP GET {_sanitize_url_for_log(url)} (no-proxy)")
     with NO_PROXY_OPENER.open(req, timeout=20) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
@@ -908,17 +959,18 @@ def render_job_rows() -> str:
         cancel_html = ""
         if j.status not in {"finished", "failed", "canceled"}:
             cancel_html = (
-                f"<form method='post' action='/cancel/{j.id}' class='inline-form'>"
+                f"<form method='post' action='/cancel/{esc(j.id)}' class='inline-form'>"
                 f"<button type='submit' class='danger'>Abbrechen</button>"
                 f"</form>"
             )
+        status_class = "error" if j.status == "failed" else ("success" if j.status == "finished" else "")
         rows += (
             f"<tr>"
-            f"<td><code>{j.id}</code></td>"
-            f"<td style='max-width:560px; word-break:break-all;'>{j.url}</td>"
-            f"<td>{j.package_name}</td>"
-            f"<td>{j.library}</td>"
-            f"<td><b>{j.status}</b><br/><small>{j.message}</small>{progress_html}{cancel_html}</td>"
+            f"<td><code>{esc(j.id)}</code></td>"
+            f"<td style='max-width:560px; word-break:break-all;'>{esc(j.url)}</td>"
+            f"<td>{esc(j.package_name)}</td>"
+            f"<td>{esc(j.library)}</td>"
+            f"<td><b class='{status_class}'>{esc(j.status)}</b><br/><small>{esc(j.message)}</small>{progress_html}{cancel_html}</td>"
             f"</tr>"
         )
 
@@ -929,7 +981,7 @@ def render_job_rows() -> str:
 def render_page(error: str = "") -> str:
     rows = render_job_rows()
 
-    err_html = f"<p class='error'>{error}</p>" if error else ""
+    err_html = f"<p class='error'>{esc(error)}</p>" if error else ""
     auth_note = "aktiv" if _auth_enabled() else "aus"
     return f"""
     <html>
@@ -991,6 +1043,10 @@ def render_page(error: str = "") -> str:
           {rows}
         </tbody>
       </table>
+
+      <form method="post" action="/clear-finished" style="margin-top:10px;">
+        <button type="submit" style="background:#666; color:#fff;">Erledigte Jobs entfernen</button>
+      </form>
     </body>
     </html>
     """
@@ -1050,8 +1106,8 @@ def render_proxies_page(
     out_text: str = "",
     export_path: str = "",
 ) -> str:
-    err_html = f"<p class='error'>{error}</p>" if error else ""
-    msg_html = f"<p class='success'>{message}</p>" if message else ""
+    err_html = f"<p class='error'>{esc(error)}</p>" if error else ""
+    msg_html = f"<p class='success'>{esc(message)}</p>" if message else ""
     return f"""
     <html>
     <head>
@@ -1068,12 +1124,12 @@ def render_proxies_page(
       <form method="post" action="/proxies">
         <div class="row">
           <label>SOCKS5 (ein Proxy pro Zeile, z. B. IP:PORT)</label><br/>
-          <textarea name="socks5_in" rows="6" style="width:100%; max-width:860px; padding:10px; border:1px solid #ccc; border-radius:8px;">{socks5_in}</textarea>
+          <textarea name="socks5_in" rows="6" style="width:100%; max-width:860px; padding:10px; border:1px solid #ccc; border-radius:8px;">{esc(socks5_in)}</textarea>
         </div>
 
         <div class="row">
           <label>SOCKS4 (ein Proxy pro Zeile, z. B. IP:PORT)</label><br/>
-          <textarea name="socks4_in" rows="6" style="width:100%; max-width:860px; padding:10px; border:1px solid #ccc; border-radius:8px;">{socks4_in}</textarea>
+          <textarea name="socks4_in" rows="6" style="width:100%; max-width:860px; padding:10px; border:1px solid #ccc; border-radius:8px;">{esc(socks4_in)}</textarea>
         </div>
 
         <button type="submit">In JDownloader-Format umwandeln</button>
@@ -1083,7 +1139,7 @@ def render_proxies_page(
       <p class="hint">Format: <code>socks5://IP:PORT</code>, <code>socks4://IP:PORT</code>. Keine Prüfung/Validierung.</p>
 
       <div class="row">
-        <textarea id="out" rows="12" readonly style="width:100%; max-width:860px; padding:10px; border:1px solid #ccc; border-radius:8px;">{out_text}</textarea>
+        <textarea id="out" rows="12" readonly style="width:100%; max-width:860px; padding:10px; border:1px solid #ccc; border-radius:8px;">{esc(out_text)}</textarea>
       </div>
 
       <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('out').value)">Kopieren</button>
@@ -1092,12 +1148,12 @@ def render_proxies_page(
       <p class="hint">Speichert die Liste als <code>.jdproxies</code> im Container, z. B. zum Import in JDownloader → Verbindungsmanager → Importieren.</p>
 
       <form method="post" action="/proxies/save">
-        <textarea name="socks5_in" style="display:none;">{socks5_in}</textarea>
-        <textarea name="socks4_in" style="display:none;">{socks4_in}</textarea>
+        <textarea name="socks5_in" style="display:none;">{esc(socks5_in)}</textarea>
+        <textarea name="socks4_in" style="display:none;">{esc(socks4_in)}</textarea>
         <button type="submit">Liste als JDProxies speichern</button>
       </form>
 
-      <p class="hint">Aktueller Pfad: <code>{export_path or PROXY_EXPORT_PATH}</code></p>
+      <p class="hint">Aktueller Pfad: <code>{esc(export_path or PROXY_EXPORT_PATH)}</code></p>
     </body>
     </html>
     """
@@ -1119,6 +1175,11 @@ def submit(url: str = Form(...), package_name: str = Form(""), library: str = Fo
 
     if not URL_RE.match(url):
         return HTMLResponse(render_page("Nur http(s) URLs erlaubt."), status_code=400)
+
+    url_err = check_url_reachable(url)
+    if url_err:
+        log_connection(f"URL-Check fehlgeschlagen: {url} -> {url_err}")
+        return HTMLResponse(render_page(f"Link nicht erreichbar: {url_err}"), status_code=400)
 
     dev = get_device()
     resp = dev.linkgrabber.add_links([{
@@ -1160,6 +1221,14 @@ def cancel(jobid: str):
         job.message = "Abbruch angefordert…"
     return RedirectResponse(url="/", status_code=303)
 
+@app.post("/clear-finished")
+def clear_finished():
+    with lock:
+        to_remove = [jid for jid, j in jobs.items() if j.status in {"finished", "failed", "canceled"}]
+        for jid in to_remove:
+            del jobs[jid]
+    return RedirectResponse(url="/", status_code=303)
+
 @app.get("/proxies", response_class=HTMLResponse)
 def proxies_get():
     try:
@@ -1169,7 +1238,6 @@ def proxies_get():
         socks4_in = fetch_proxy_list(
             "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&protocol=socks4&timeout=10000&country=all&ssl=yes&anonymity=elite&skip=0&limit=2000"
         )
-        http_in = fetch_proxy_list("https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt")
 
         s5 = format_proxy_lines(socks5_in, "socks5")
         s4 = format_proxy_lines(socks4_in, "socks4")
