@@ -1168,46 +1168,59 @@ def index():
 
 @app.post("/submit")
 def submit(url: str = Form(...), package_name: str = Form(""), library: str = Form("auto")):
-    ensure_env()
-    url = url.strip()
-    package_name = (package_name or "").strip() or "WebGUI"
-    library = (library or "auto").strip().lower()
+    try:
+        ensure_env()
+        url = url.strip()
+        package_name = (package_name or "").strip() or "WebGUI"
+        library = (library or "auto").strip().lower()
 
-    if not URL_RE.match(url):
-        return HTMLResponse(render_page("Nur http(s) URLs erlaubt."), status_code=400)
+        if not URL_RE.match(url):
+            return HTMLResponse(render_page("Nur http(s) URLs erlaubt."), status_code=400)
 
-    url_err = check_url_reachable(url)
-    if url_err:
-        log_connection(f"URL-Check fehlgeschlagen: {url} -> {url_err}")
-        return HTMLResponse(render_page(f"Link nicht erreichbar: {url_err}"), status_code=400)
+        url_err = check_url_reachable(url)
+        if url_err:
+            log_connection(f"URL-Check fehlgeschlagen: {url} -> {url_err}")
+            return HTMLResponse(render_page(f"Link nicht erreichbar: {url_err}"), status_code=400)
 
-    dev = get_device()
-    resp = dev.linkgrabber.add_links([{
-        "links": url,
-        "autostart": True,
-        "assignJobID": True,
-        "packageName": package_name,
-    }])
+        dev = get_device()
+        resp = dev.linkgrabber.add_links([{
+            "links": url,
+            "autostart": True,
+            "assignJobID": True,
+            "packageName": package_name,
+        }])
 
-    jobid = str(resp.get("id", ""))
-    if not jobid:
-        return HTMLResponse(render_page(f"Unerwartete Antwort von add_links: {resp}"), status_code=500)
+        jobid = ""
+        if isinstance(resp, dict):
+            jobid = str(resp.get("id", "")).strip()
+        elif isinstance(resp, (str, int)):
+            jobid = str(resp).strip()
+        elif isinstance(resp, list) and resp and isinstance(resp[0], dict):
+            jobid = str(resp[0].get("id", "")).strip()
 
-    with lock:
-        jobs[jobid] = Job(
-            id=jobid,
-            url=url,
-            package_name=package_name,
-            library=library,
-            status="queued",
-            message="Download gestartet",
-            progress=0.0,
-        )
+        if not jobid:
+            msg = f"Unerwartete Antwort von add_links (kein Job-ID): {resp!r}"
+            log_connection(msg)
+            return HTMLResponse(render_page(msg), status_code=502)
 
-    t = threading.Thread(target=worker, args=(jobid,), daemon=True)
-    t.start()
+        with lock:
+            jobs[jobid] = Job(
+                id=jobid,
+                url=url,
+                package_name=package_name,
+                library=library,
+                status="queued",
+                message="Download gestartet",
+                progress=0.0,
+            )
 
-    return RedirectResponse(url="/", status_code=303)
+        t = threading.Thread(target=worker, args=(jobid,), daemon=True)
+        t.start()
+
+        return RedirectResponse(url="/", status_code=303)
+    except Exception as e:
+        log_connection(f"Submit-Fehler: {e}")
+        return HTMLResponse(render_page(f"Interner Fehler beim Absenden: {e}"), status_code=500)
 
 @app.post("/cancel/{jobid}")
 def cancel(jobid: str):
